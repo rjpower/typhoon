@@ -1,0 +1,7 @@
+*.pyc
+*.o
+*.a
+*.so
+*.capnp.c++
+*.capnp.h
+_python-env/
