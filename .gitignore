@@ -2,6 +2,6 @@
 *.o
 *.a
 *.so
-*.capnp.c++
-*.capnp.h
+*.capnp.*
+*.pb.*
 _python-env/

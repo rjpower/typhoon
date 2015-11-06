@@ -5,7 +5,7 @@
 // TODO - handle reads via jellyfish.
 class KMERMapper: public MapperT<uint64_t, uint64_t, std::string, uint32_t> {
 public:
-  void mapShard(MapInput* inputType, FileSplit::Reader split) {
+  void mapShard(MapInput* inputType, const FileSplit& split) {
     // const char* filename = split.getFilename().cStr();
     // kmers = Jellyfish::magic(filename);
     // for each kmer
@@ -14,7 +14,7 @@ public:
 };
 
 struct KMERInput : public MapInputT<uint64_t, uint64_t> {
-  virtual ReaderT<uint64_t, uint64_t>* createReader(FileSplit::Reader split) {
+  virtual ReaderT<uint64_t, uint64_t>* createReader(const FileSplit& split) {
     return NULL;
   }
 };

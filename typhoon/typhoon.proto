@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+option optimize_for = SPEED;
+
+
+// This is ugly, but the only way I can think of to efficiently
+// encode a large number of variants.
+message DataList {
+  repeated string dString = 1;
+  repeated int32 dInt32 = 2;
+  repeated int64 dInt64 = 3;
+  repeated double dDouble = 4;
+}
+
+message ShuffleRequest {
+  DataList keys = 1;
+  DataList values = 2;
+  string sourceWorker = 3;
+  fixed32 mapId = 4;
+  bool done = 5;
+}
+
+message ShuffleResponse {
+
+}
+
+message FileSplit {
+  string filename = 1;
+  fixed64 startPos = 2;
+  fixed64 endPos = 3;
+  map<string, string> userInfo = 4; 
+}
+
+message FileSplits {
+  repeated FileSplit splits = 1;
+}
+
+message MapRequest {
+  FileSplit shard = 1;
+}
+
+message MapResponse {
+  double elapsedTime = 1;
+  repeated string messages = 2;
+}
+
+message WorkerInfo {
+  repeated fixed32 reduceShards = 1;
+  string host = 2;
+  fixed32 port = 3;
+}
+
+service TyphoonWorker {
+  rpc map (MapRequest) returns (MapResponse);
+  rpc shuffle (ShuffleRequest) returns (ShuffleResponse);
+}
+
+service TyphoonMaster {
+  rpc Status (MapRequest) returns (MapResponse);
+}

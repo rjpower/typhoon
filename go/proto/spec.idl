@@ -1,0 +1,10 @@
+
+attribute "priority";
+
+table Data {
+  i32Val:uint;
+  i64Val:ulong;
+  doubleVal:double;
+  strVal:[ubyte];
+}
+

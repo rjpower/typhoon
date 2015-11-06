@@ -6,7 +6,7 @@
 #include <string>
 #include <unordered_map>
 
-#include "typhoon/proto.capnp.h"
+#include "typhoon/typhoon.pb.h"
 #include "typhoon/registry.h"
 
 class MapInput {
@@ -37,13 +37,13 @@ class Writer {
 
 class Store {
 public:
-  virtual void partition(std::vector<ShuffleRequest::Builder>& writers) = 0;
-  virtual void applyUpdates(const ShuffleRequest::Reader& r) = 0;
+  virtual void partition(std::vector<ShuffleRequest>& writers) = 0;
+  virtual void applyUpdates(const ShuffleRequest& r) = 0;
 };
 
 class Mapper {
 public:
-  virtual void mapShard(MapInput* shard, FileSplit::Reader split) = 0;
+  virtual void mapShard(MapInput* shard, const FileSplit& split) = 0;
 };
 
 template <class K, class V>
@@ -55,9 +55,44 @@ public:
 template <class K, class V>
 class MapInputT : public MapInput {
 public:
-  virtual ReaderT<K, V>* createReader(FileSplit::Reader split) = 0;
+  virtual ReaderT<K, V>* createReader(const FileSplit& split) = 0;
   virtual FileSplits computeSplits();
 };
+
+class WordInput: public MapInputT<uint64_t, std::string> {
+public:
+  class Reader: public ReaderT<uint64_t, std::string> {
+  public:
+    FILE* f;
+
+    Reader() {
+      f = fopen("./testdata/shakespeare.txt", "r");
+    }
+
+    bool next(uint64_t* pos, std::string* word) {
+      char buf[256];
+      int res = fscanf(f, "%s", buf);
+
+      word->assign(buf);
+      if (res == EOF) {
+        return false;
+      }
+      return true;
+    }
+  };
+
+  virtual ReaderT<uint64_t, std::string>* createReader(const FileSplit& split) {
+    return new Reader();
+  }
+
+  FileSplits computeSplits() {
+    FileSplits splits;
+    FileSplit* split = splits.add_splits();
+    split->set_filename("./testdata/shakespeare.txt");
+    return splits;
+  }
+};
+
 
 template <class K, class V>
 class WriterT : public Writer {
@@ -72,6 +107,41 @@ public:
   ReaderT<K, V>* reader();
 };
 
+template <class T>
+struct DataReader {
+  static const T& read(const DataList& data, int idx);
+};
+
+template <>
+struct DataReader<int32_t> {
+  static const int size(const DataList& data) { return data.dint32_size(); }
+  static const int32_t read(const DataList& data, int idx) { return data.dint32(idx); }
+};
+
+template <>
+struct DataReader<int64_t> {
+  static const int size(const DataList& data) { return data.dint64_size(); }
+  static const int64_t read(const DataList& data, int idx) { return data.dint64(idx); }
+};
+
+template <>
+struct DataReader<double> {
+  static const int size(const DataList& data) { return data.ddouble_size(); }
+  static const double read(const DataList& data, int idx) { return data.ddouble(idx); }
+};
+
+template <>
+struct DataReader<std::string> {
+  static const int size(const DataList& data) { return data.dstring_size(); }
+  static const std::string read(const DataList& data, int idx) { return data.dstring(idx); }
+};
+
+
+static inline void writeDatum(DataList& data, const std::string& value) { data.add_dstring(value); }
+static inline void writeDatum(DataList& data, int64_t value) { data.add_dint64(value); }
+static inline void writeDatum(DataList& data, int32_t value) { data.add_dint32(value); }
+static inline void writeDatum(DataList& data, double value) { data.add_ddouble(value); }
+
 template <class K, class V>
 class MemStore : public StoreT<K, V> {
 private:
@@ -82,27 +152,22 @@ private:
 public:
   MemStore(CombinerT<V>* combiner) : combiner_(combiner) {}
 
-  void partition(std::vector<ShuffleRequest::Builder>& writers) {
-    std::vector<std::string> output;
+  void partition(std::vector<ShuffleRequest>& writers) {
     for (typename Map::iterator i = m_.begin(); i != m_.end(); ++i) {
       int partition = 0;
       const K& k = i->first;
       const V& v = i->second;
-      output[partition].append((char*)&k, sizeof(k));
-      output[partition].append((char*)&v, sizeof(v));
+      writeDatum(*writers[partition].mutable_keys(), k);
+      writeDatum(*writers[partition].mutable_values(), v);
     }
   }
 
-  void applyUpdates(const ShuffleRequest::Reader& reader) {
-    kj::ArrayPtr<const kj::byte> bytes = reader.getData();
-    const kj::byte* cur = bytes.begin();
-    const kj::byte* end = bytes.end();
-    while (cur < end) {
-      K* k = (K*)cur;
-      cur += sizeof(K);
-      V* v = (V*)cur;
-      cur += sizeof(V);
-      write(*k, *v);
+  void applyUpdates(const ShuffleRequest& reader) {
+    const DataList& keys = reader.keys();
+    const DataList& vals = reader.values();
+
+    for (int i = 0; i < DataReader<K>::size(keys); ++i) {
+      this->write(DataReader<K>::read(keys, i), DataReader<V>::read(vals, i));
     }
   }
 
@@ -115,23 +180,11 @@ public:
   }
 };
 
-template <class KIn, class VIn, class KOut, class VOut>
+template <class KOut, class VOut>
 class MapperT : public Mapper {
 public:
   StoreT<KOut, VOut>* output;
-
-  virtual void map(const KIn& k, const VIn& v) {}
-
-  virtual void mapShard(MapInput* inputType, FileSplit::Reader split) {
-    KIn k;
-    VIn v;
-    MapInputT<KIn, VIn>* m = (MapInputT<KIn, VIn>*)inputType;
-    ReaderT<KIn, VIn>* r = m->createReader(split);
-
-    while (r->next(&k, &v)) {
-      map(k, v);
-    }
-  }
+  virtual void mapShard(MapInput* inputType, const FileSplit& split) = 0;
 };
 
 typedef Mapper* (*MapperCreator)(Store* store);
