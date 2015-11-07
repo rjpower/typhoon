@@ -10,6 +10,9 @@
 #include "typhoon/registry.h"
 
 class MapInput {
+public:
+  MapInput() {}
+  virtual ~MapInput() {}
 };
 
 class Combiner {
@@ -18,7 +21,7 @@ class Combiner {
 template <class V>
 class CombinerT : public Combiner {
 public:
-  void combine(V& current, const V& update);
+  virtual void combine(V& current, const V& update) = 0;
 };
 
 template <class T>
@@ -29,6 +32,8 @@ class SumCombiner: public CombinerT<T> {
 };
 
 class Reader {
+public:
+  virtual ~Reader() {}
 };
 
 class Writer {
@@ -43,33 +48,40 @@ public:
 
 class Mapper {
 public:
+  Store* store_;
+  virtual ~Mapper() {}
   virtual void mapShard(MapInput* shard, const FileSplit& split) = 0;
 };
 
 template <class K, class V>
 class ReaderT : public Reader {
 public:
-  virtual bool next(K* k, V* v);
+  virtual bool next(K* k, V* v) = 0;
 };
 
 template <class K, class V>
 class MapInputT : public MapInput {
 public:
-  virtual ReaderT<K, V>* createReader(const FileSplit& split) = 0;
-  virtual FileSplits computeSplits();
+  virtual ~MapInputT() {}
+  virtual std::shared_ptr<Reader> createReader(const FileSplit& split) = 0;
+  virtual FileSplits computeSplits() = 0;
 };
 
-class WordInput: public MapInputT<uint64_t, std::string> {
+class WordInput: public MapInputT<int64_t, std::string> {
 public:
-  class Reader: public ReaderT<uint64_t, std::string> {
+  class WordReader: public ReaderT<int64_t, std::string> {
   public:
     FILE* f;
 
-    Reader() {
+    WordReader() {
       f = fopen("./testdata/shakespeare.txt", "r");
     }
 
-    bool next(uint64_t* pos, std::string* word) {
+    virtual ~WordReader() {
+      fclose(f);
+    }
+
+    bool next(int64_t* pos, std::string* word) {
       char buf[256];
       int res = fscanf(f, "%s", buf);
 
@@ -81,8 +93,8 @@ public:
     }
   };
 
-  virtual ReaderT<uint64_t, std::string>* createReader(const FileSplit& split) {
-    return new Reader();
+  virtual std::shared_ptr<Reader> createReader(const FileSplit& split) {
+    return std::make_shared<WordReader>();
   }
 
   FileSplits computeSplits() {
@@ -103,44 +115,42 @@ public:
 template <class K, class V>
 class StoreT : public Store, public WriterT<K, V> {
 public:
-  virtual void write(const K& k, const V& v);
-  ReaderT<K, V>* reader();
+  virtual void write(const K& k, const V& v) = 0;
 };
 
 template <class T>
-struct DataReader {
+struct DataWrangler {
   static const T& read(const DataList& data, int idx);
 };
 
 template <>
-struct DataReader<int32_t> {
+struct DataWrangler<int32_t> {
   static const int size(const DataList& data) { return data.dint32_size(); }
   static const int32_t read(const DataList& data, int idx) { return data.dint32(idx); }
+  static void write(DataList& data, int32_t value) { data.add_dint32(value); }
 };
 
 template <>
-struct DataReader<int64_t> {
+struct DataWrangler<int64_t> {
   static const int size(const DataList& data) { return data.dint64_size(); }
   static const int64_t read(const DataList& data, int idx) { return data.dint64(idx); }
+  static void write(DataList& data, int64_t value) { data.add_dint64(value); }
 };
 
 template <>
-struct DataReader<double> {
+struct DataWrangler<double> {
   static const int size(const DataList& data) { return data.ddouble_size(); }
   static const double read(const DataList& data, int idx) { return data.ddouble(idx); }
+  static void write(DataList& data, double value) { data.add_ddouble(value); }
 };
 
 template <>
-struct DataReader<std::string> {
+struct DataWrangler<std::string> {
   static const int size(const DataList& data) { return data.dstring_size(); }
   static const std::string read(const DataList& data, int idx) { return data.dstring(idx); }
+  static void write(DataList& data, const std::string& value) { data.add_dstring(value); }
 };
 
-
-static inline void writeDatum(DataList& data, const std::string& value) { data.add_dstring(value); }
-static inline void writeDatum(DataList& data, int64_t value) { data.add_dint64(value); }
-static inline void writeDatum(DataList& data, int32_t value) { data.add_dint32(value); }
-static inline void writeDatum(DataList& data, double value) { data.add_ddouble(value); }
 
 template <class K, class V>
 class MemStore : public StoreT<K, V> {
@@ -157,8 +167,8 @@ public:
       int partition = 0;
       const K& k = i->first;
       const V& v = i->second;
-      writeDatum(*writers[partition].mutable_keys(), k);
-      writeDatum(*writers[partition].mutable_values(), v);
+      DataWrangler<K>::write(*writers[partition].mutable_keys(), k);
+      DataWrangler<V>::write(*writers[partition].mutable_values(), v);
     }
   }
 
@@ -166,8 +176,8 @@ public:
     const DataList& keys = reader.keys();
     const DataList& vals = reader.values();
 
-    for (int i = 0; i < DataReader<K>::size(keys); ++i) {
-      this->write(DataReader<K>::read(keys, i), DataReader<V>::read(vals, i));
+    for (int i = 0; i < DataWrangler<K>::size(keys); ++i) {
+      this->write(DataWrangler<K>::read(keys, i), DataWrangler<V>::read(vals, i));
     }
   }
 
@@ -183,21 +193,31 @@ public:
 template <class KOut, class VOut>
 class MapperT : public Mapper {
 public:
-  StoreT<KOut, VOut>* output;
+  virtual ~MapperT() {}
   virtual void mapShard(MapInput* inputType, const FileSplit& split) = 0;
+
+  void put(const KOut& k, const VOut& v) {
+    auto typedStore = (StoreT<KOut, VOut>*)store_;
+    typedStore->write(k, v);
+  }
 };
 
-typedef Mapper* (*MapperCreator)(Store* store);
+typedef Mapper* (*MapperCreator)();
 typedef Store* (*StoreCreator)();
 typedef Writer* (*OutputCreator)(const std::string& filename);
-typedef Combiner* (*CombinerCreator)();
 
 struct TyphoonConfig {
   MapInput* mapInput;
   MapperCreator mapper;
   StoreCreator store;
   OutputCreator output;
-  CombinerCreator combiner;
 };
+
+static inline Mapper* createMapper(const TyphoonConfig& config) {
+  Store* store = config.store();
+  Mapper* mapper = config.mapper();
+  mapper->store_ = store;
+  return mapper;
+}
 
 #endif

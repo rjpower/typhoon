@@ -2,18 +2,33 @@
 #include "typhoon/worker.h"
 #include "typhoon/common.h"
 
-class CountMapper: public MapperT<std::string, uint64_t> {
-public:
-  void mapShard(MapInput* inputType, const FileSplit& split) {
+#include <memory>
 
+class CountMapper: public MapperT<std::string, int64_t> {
+public:
+  void mapShard(MapInput* input, const FileSplit& split) {
+    printf("Mapping...\n");
+    auto typedInput = dynamic_cast<WordInput*>(input);
+    std::shared_ptr<Reader> reader(typedInput->createReader(split));
+    std::string word;
+    int64_t pos;
+
+    auto casted = std::dynamic_pointer_cast<WordInput::WordReader>(reader);
+
+    while (casted->next(&pos, &word)) {
+      printf("Read: %s\n", word.c_str());
+      put(word, 1);
+    }
   }
 };
 
 WordInput input;
 
 TyphoonConfig config = {
-  .mapper = [] (Store* store) -> Mapper* { return new CountMapper; },
-  .combiner = [] () -> Combiner* { return new SumCombiner<uint64_t>; },
+  .store = [] () -> Store* {
+    return new MemStore<std::string, int64_t>(new SumCombiner<int64_t>);
+  },
+  .mapper = [] () -> Mapper* { return new CountMapper; },
   .mapInput = &input,
 };
 

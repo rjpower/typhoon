@@ -10,10 +10,10 @@ GRPC_ROOT=./third_party/grpc/include
 GRPC_PLUGIN=./third_party/grpc/bins/opt/grpc_cpp_plugin
 
 INCLUDE=-I${CAPNP_ROOT}/src -I${PROTO_ROOT} -I. -I${GRPC_ROOT}
-CXX_FLAGS=-std=c++11 -Wall -fPIC -DNDEBUG -O2 ${INCLUDE}
+CXX_FLAGS=-std=c++11 -Wall -fPIC -DNDEBUG -O0 -g2 ${INCLUDE}
 
 LIBS=-Lthird_party/grpc/libs/opt/ -Lthird_party/grpc/third_party/protobuf/src/.libs/\
-  -lgrpc++_unsecure -lgrpc_unsecure -lprotobuf -lgpr -lz
+  -lgrpc++_unsecure -lgrpc_unsecure -lprotobuf -lgpr -lpthread -lz
 
 
 GENERATED_PROTO=typhoon/typhoon.pb.h
@@ -34,8 +34,7 @@ build/libtyphoon.a: \
 
 clean:
 	rm -rf build/*
-	rm typhoon/proto.capnp.*
-	rm typhoon/proto.pb.*
+	rm -f typhoon/proto.pb.*
 
 build/%.o : %.cc ${GENERATED_PROTO} ${HEADERS}
 	mkdir -p build/$(dir $<)
