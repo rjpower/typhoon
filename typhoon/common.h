@@ -6,121 +6,24 @@
 #include <string>
 #include <unordered_map>
 
+#include <cstdio>
+
 #include "typhoon/typhoon.pb.h"
+#include "typhoon/typhoon.grpc.pb.h"
 #include "typhoon/registry.h"
 
-class MapInput {
-public:
-  MapInput() {}
-  virtual ~MapInput() {}
-};
+static const int kShuffleBufferSize = 1e9;
+static const int kPullBlockSize = 4096;
 
-class Combiner {
-};
-
-template <class V>
-class CombinerT : public Combiner {
-public:
-  virtual void combine(V& current, const V& update) = 0;
-};
-
-template <class T>
-class SumCombiner: public CombinerT<T> {
-  void combine(T& current, const T& update) {
-    current += update;
-  }
-};
-
-class Reader {
-public:
-  virtual ~Reader() {}
-};
-
-class Writer {
-};
-
-
-class Store {
-public:
-  virtual void partition(std::vector<ShuffleRequest>& writers) = 0;
-  virtual void applyUpdates(const ShuffleRequest& r) = 0;
-};
-
-class Mapper {
-public:
-  Store* store_;
-  virtual ~Mapper() {}
-  virtual void mapShard(MapInput* shard, const FileSplit& split) = 0;
-};
-
-template <class K, class V>
-class ReaderT : public Reader {
-public:
-  virtual bool next(K* k, V* v) = 0;
-};
-
-template <class K, class V>
-class MapInputT : public MapInput {
-public:
-  virtual ~MapInputT() {}
-  virtual std::shared_ptr<Reader> createReader(const FileSplit& split) = 0;
-  virtual FileSplits computeSplits() = 0;
-};
-
-class WordInput: public MapInputT<int64_t, std::string> {
-public:
-  class WordReader: public ReaderT<int64_t, std::string> {
-  public:
-    FILE* f;
-
-    WordReader() {
-      f = fopen("./testdata/shakespeare.txt", "r");
-    }
-
-    virtual ~WordReader() {
-      fclose(f);
-    }
-
-    bool next(int64_t* pos, std::string* word) {
-      char buf[256];
-      int res = fscanf(f, "%s", buf);
-
-      word->assign(buf);
-      if (res == EOF) {
-        return false;
-      }
-      return true;
-    }
-  };
-
-  virtual std::shared_ptr<Reader> createReader(const FileSplit& split) {
-    return std::make_shared<WordReader>();
-  }
-
-  FileSplits computeSplits() {
-    FileSplits splits;
-    FileSplit* split = splits.add_splits();
-    split->set_filename("./testdata/shakespeare.txt");
-    return splits;
-  }
-};
-
-
-template <class K, class V>
-class WriterT : public Writer {
-public:
-  virtual void write(const K& k, const V& v) = 0;
-};
-
-template <class K, class V>
-class StoreT : public Store, public WriterT<K, V> {
-public:
-  virtual void write(const K& k, const V& v) = 0;
-};
-
+// This is very ugly, but serves the purpose of giving us a way to read/write common
+// types from our messages without too much pain.
 template <class T>
 struct DataWrangler {
   static const T& read(const DataList& data, int idx);
+  static void write(DataList& data, T value) { data.add_dint32(value); }
+
+  static const int size(const DataList& data);
+  static const size_t partition(T value, size_t numPartitions) { return value % numPartitions; }
 };
 
 template <>
@@ -128,6 +31,7 @@ struct DataWrangler<int32_t> {
   static const int size(const DataList& data) { return data.dint32_size(); }
   static const int32_t read(const DataList& data, int idx) { return data.dint32(idx); }
   static void write(DataList& data, int32_t value) { data.add_dint32(value); }
+  static const size_t partition(int32_t value, size_t numPartitions) { return value % numPartitions; }
 };
 
 template <>
@@ -135,6 +39,7 @@ struct DataWrangler<int64_t> {
   static const int size(const DataList& data) { return data.dint64_size(); }
   static const int64_t read(const DataList& data, int idx) { return data.dint64(idx); }
   static void write(DataList& data, int64_t value) { data.add_dint64(value); }
+  static const size_t partition(int64_t value, size_t numPartitions) { return value % numPartitions; }
 };
 
 template <>
@@ -147,10 +52,252 @@ struct DataWrangler<double> {
 template <>
 struct DataWrangler<std::string> {
   static const int size(const DataList& data) { return data.dstring_size(); }
-  static const std::string read(const DataList& data, int idx) { return data.dstring(idx); }
+  static const std::string& read(const DataList& data, int idx) { return data.dstring(idx); }
   static void write(DataList& data, const std::string& value) { data.add_dstring(value); }
+
+  static const size_t partition(const std::string& value, size_t numPartitions) {
+    // TODO(better hash)
+    static std::hash<std::string> hash_fn;
+    return hash_fn(value) % numPartitions;
+  }
 };
 
+class Iterator {
+public:
+  virtual ~Iterator() {}
+  virtual bool copy(ShuffleData* data, size_t maxElements) = 0;
+};
+
+// Just a placeholder class to allow us to dynamic_cast when needed.
+class Base {
+public:
+  virtual ~Base() {}
+};
+
+class Source : virtual public Base {
+protected:
+  bool ready_;
+public:
+  typedef std::shared_ptr<Source> Ptr;
+  Source() : ready_(true) {}
+
+  virtual ~Source() {}
+  virtual Iterator* iterator() = 0;
+
+  void setReady(bool ready) {
+    ready_ = ready;
+  }
+
+  virtual bool ready() {
+    return ready_;
+  }
+};
+
+class Sink : virtual public Base {
+public:
+  typedef std::shared_ptr<Sink> Ptr;
+  virtual ~Sink() {}
+  virtual void applyUpdates(const ShuffleData& r) = 0;
+};
+
+class Task {
+public:
+  virtual ~Task() {
+
+  }
+  virtual void run(
+      std::vector<Source::Ptr> sources,
+      std::vector<Sink::Ptr> sinks) = 0;
+
+  virtual void initialize(const TaskDescription& req) {
+
+  }
+
+  virtual void status(TaskStatus* status) {
+    status->set_status(Status::ACTIVE);
+  }
+};
+
+template <class K, class V>
+class IteratorT : public Iterator {
+public:
+  virtual bool next(K* k, V* v) = 0;
+
+  void partition(std::vector<ShuffleData>& writers) {
+    K k;
+    V v;
+    while (next(&k, &v)) {
+      size_t shard = DataWrangler<K>::partition(k, writers.size());
+      DataWrangler<K>::write(*writers[shard].mutable_keys(), k);
+      DataWrangler<V>::write(*writers[shard].mutable_values(), v);
+    }
+  }
+
+  virtual bool copy(ShuffleData* data, size_t maxElements) {
+    K k;
+    V v;
+
+    DataList* keys = data->mutable_keys();
+    DataList* vals = data->mutable_values();
+
+    size_t i = 0;
+
+    while (true) {
+      if (maxElements > 0 && i++ >= maxElements) {
+        return true;
+      }
+
+      if (!this->next(&k, &v)) {
+        return false;
+      }
+
+      DataWrangler<K>::write(*keys, k);
+      DataWrangler<V>::write(*vals, v);
+    }
+
+    return true;
+  }
+};
+
+template <class K, class V>
+class SourceT: public Source {
+public:
+  virtual ~SourceT() {}
+};
+
+template <class K, class V>
+class SinkT : public Sink {
+public:
+  virtual void write(const K& k, const V& v) = 0;
+  void applyUpdates(const ShuffleData& reader) {
+    const DataList& keys = reader.keys();
+    const DataList& vals = reader.values();
+
+    for (int i = 0; i < DataWrangler<K>::size(keys); ++i) {
+      this->write(DataWrangler<K>::read(keys, i), DataWrangler<V>::read(vals, i));
+    }
+  }
+};
+
+class RemoteStore {
+public:
+  virtual void setRemote(TyphoonWorker::Stub* peer, const std::string& name) = 0;
+};
+
+template <class K, class V>
+class RemoteIterator : public IteratorT<K, V> {
+  TyphoonWorker::Stub* peer_;
+  PullRequest req_;
+  PullResponse buffer_;
+  int idx_;
+
+  void fetchNextChunk() {
+    gpr_log(GPR_INFO, "Fetching chunk from %s. id=%lld", req_.source().c_str(), req_.iterator());
+    grpc::ClientContext ctx;
+    peer_->pull(&ctx, req_, &buffer_);
+    req_.set_iterator(buffer_.iterator());
+    gpr_log(GPR_INFO, "Finished fetch.  id=%lld", req_.iterator());
+    idx_ = 0;
+  }
+
+public:
+  RemoteIterator(TyphoonWorker::Stub* peer, const std::string& source) : peer_(peer), idx_(0) {
+    req_.set_source(source);
+    req_.set_iterator(-1);
+    fetchNextChunk();
+  }
+
+  bool next(K* k, V* v) {
+    if (DataWrangler<K>::size(buffer_.data().keys()) == idx_) {
+      if (buffer_.done()) {
+        return false;
+      }
+
+      fetchNextChunk();
+
+      // Handle the (odd) case of an empty, non-first chunk.
+      if (buffer_.done() && DataWrangler<K>::size(buffer_.data().keys()) == 0) {
+        return false;
+      }
+    }
+
+    *k = DataWrangler<K>::read(buffer_.data().keys(), idx_);
+    *v = DataWrangler<V>::read(buffer_.data().values(), idx_);
+
+    ++idx_;
+    return true;
+  }
+};
+
+// How to handle a typed remote store?
+template <class K, class V>
+class RemoteStoreT : public SourceT<K, V>, public SinkT<K, V>, public RemoteStore {
+private:
+  PushRequest push_;
+  TyphoonWorker::Stub* peer_;
+  std::string name_;
+
+  void scheduleWrite() {
+    grpc::ClientContext ctx;
+    PushResponse resp;
+    peer_->push(&ctx, push_, &resp);
+    push_.Clear();
+  }
+
+public:
+  void setRemote(TyphoonWorker::Stub* peer, const std::string& name) {
+    peer_ = peer;
+    name_ = name;
+  }
+
+  void write(const K& k, const V& v) {
+    ShuffleData* data = push_.mutable_data();
+    DataWrangler<K>::write(*data->mutable_keys(), k);
+    DataWrangler<V>::write(*data->mutable_values(), v);
+
+    if (DataWrangler<K>::size(data->keys()) > kShuffleBufferSize) {
+      scheduleWrite();
+    }
+  }
+
+  Iterator* iterator() {
+    return new RemoteIterator<K, V>(peer_, name_);
+  }
+};
+
+class Combiner {
+};
+
+template <class V>
+class CombinerT : public Combiner {
+public:
+  virtual void combine(V& current, const V& update) = 0;
+};
+
+template <class K, class V>
+class StoreT : public SinkT<K, V>, public SourceT<K, V> {
+};
+
+template <class K, class V>
+class MemIterator : public IteratorT<K, V> {
+public:
+  typedef std::unordered_map<K, V> Map;
+  typename Map::const_iterator cur_, end_;
+  MemIterator(const Map& m) {
+    cur_ = m.begin();
+    end_ = m.end();
+  }
+
+  bool next(K* k, V* v) {
+    if (cur_ == end_) {
+      return false;
+    }
+    *k = cur_->first;
+    *v = cur_->second;
+    ++cur_;
+    return true;
+  }
+};
 
 template <class K, class V>
 class MemStore : public StoreT<K, V> {
@@ -160,29 +307,15 @@ private:
   Map m_;
 
 public:
+  MemStore() : combiner_(NULL) {}
   MemStore(CombinerT<V>* combiner) : combiner_(combiner) {}
 
-  void partition(std::vector<ShuffleRequest>& writers) {
-    for (typename Map::iterator i = m_.begin(); i != m_.end(); ++i) {
-      int partition = 0;
-      const K& k = i->first;
-      const V& v = i->second;
-      DataWrangler<K>::write(*writers[partition].mutable_keys(), k);
-      DataWrangler<V>::write(*writers[partition].mutable_values(), v);
-    }
-  }
-
-  void applyUpdates(const ShuffleRequest& reader) {
-    const DataList& keys = reader.keys();
-    const DataList& vals = reader.values();
-
-    for (int i = 0; i < DataWrangler<K>::size(keys); ++i) {
-      this->write(DataWrangler<K>::read(keys, i), DataWrangler<V>::read(vals, i));
-    }
+  virtual Iterator* iterator() {
+    return new MemIterator<K, V>(m_);
   }
 
   void write(const K& k, const V& v) {
-    if (m_.find(k) == m_.end()) {
+    if (m_.find(k) == m_.end() || combiner_ == NULL) {
       m_[k] = v;
     } else {
       combiner_->combine(m_[k], v);
@@ -190,34 +323,43 @@ public:
   }
 };
 
-template <class KOut, class VOut>
-class MapperT : public Mapper {
-public:
-  virtual ~MapperT() {}
-  virtual void mapShard(MapInput* inputType, const FileSplit& split) = 0;
+template <class From>
+std::string to_string(const From& f);
 
-  void put(const KOut& k, const VOut& v) {
-    auto typedStore = (StoreT<KOut, VOut>*)store_;
-    typedStore->write(k, v);
+#define PRINTF_CONVERT(Type, Format)\
+  template <>\
+  inline std::string to_string(const Type& f) {\
+    char buf[32];\
+    sprintf(buf, "%" # Format, f);\
+    return buf;\
+  }
+
+PRINTF_CONVERT(int64_t, lld)
+PRINTF_CONVERT(int32_t, d)
+PRINTF_CONVERT(uint64_t, llu)
+PRINTF_CONVERT(uint32_t, u)
+PRINTF_CONVERT(double, f)
+PRINTF_CONVERT(float, f)
+
+template <>
+inline std::string to_string(const std::string& s) {
+  return s;
+}
+
+template <class K, class V>
+class TextSink : public SinkT<K, V> {
+private:
+  FILE* out_;
+
+public:
+  TextSink() {
+    out_ = fopen("./testdata/counts.txt", "r");
+  }
+
+  void write(const K& k, const V& v) {
+    fprintf(out_, "%s %s\n", to_string(k).c_str(), to_string(v).c_str());
   }
 };
 
-typedef Mapper* (*MapperCreator)();
-typedef Store* (*StoreCreator)();
-typedef Writer* (*OutputCreator)(const std::string& filename);
-
-struct TyphoonConfig {
-  MapInput* mapInput;
-  MapperCreator mapper;
-  StoreCreator store;
-  OutputCreator output;
-};
-
-static inline Mapper* createMapper(const TyphoonConfig& config) {
-  Store* store = config.store();
-  Mapper* mapper = config.mapper();
-  mapper->store_ = store;
-  return mapper;
-}
 
 #endif

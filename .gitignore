@@ -3,5 +3,10 @@
 *.a
 *.so
 *.capnp.*
-*.pb.*
+*.pb.h
+*.pb.cc
+*_pb.py
+*_pb2.py
+
 _python-env/
+build/

@@ -1,21 +1,29 @@
 #ifndef TYPHOON_REGISTRY_H
 #define TYPHOON_REGISTRY_H
 
+#include <map>
+#include <string>
+#include <typeinfo>
+#include <grpc++/grpc++.h>
+
 template<class T>
 class Registry {
 public:
   struct Creator {
-    virtual T* create();
+    virtual T* create() = 0;
   };
 
   typedef std::map<std::string, Creator*> Map;
 
   static void put(const std::string& k, Creator* c) {
-    getMap()[k] = c;
+    Map& m = getMap();
+    m[k] = c;
   }
 
   static T* create(const std::string& k) {
-    return getMap()[k]->create();
+    Map& m = getMap();
+    assert(m.find(k) != m.end());
+    return m[k]->create();
   }
 
   static Map& getMap() {
@@ -31,18 +39,21 @@ private:
 template<class T>
 typename Registry<T>::Map* Registry<T>::m_;
 
-template<class T>
-struct RegistryHelper : public Registry<T>::Creator {
+template<class Base, class Derived>
+struct RegistryHelper : public Registry<Base>::Creator {
+  RegistryHelper() = delete;
+
   RegistryHelper(const std::string& k) {
-    Registry<T>::put(k, this);
+    gpr_log(GPR_INFO, "Registering: %s %s", typeid(Base).name(), k.c_str());
+    Registry<Base>::put(k, this);
   }
 
-  T* create() {
-    return new T;
+  Base* create() {
+    return new Derived;
   }
 };
 
-#define REGISTER(T, name, klass)\
-  static RegistryHelper<T> _helper_ ## klass(#name);
+#define REGISTER(Base, Derived)\
+  static RegistryHelper<Base, Derived> _helper_ ## Derived(#Derived);
 
 #endif

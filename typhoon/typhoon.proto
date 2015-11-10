@@ -7,54 +7,143 @@ option optimize_for = SPEED;
 // encode a large number of variants.
 message DataList {
   repeated string dString = 1;
-  repeated int32 dInt32 = 2;
-  repeated int64 dInt64 = 3;
-  repeated double dDouble = 4;
+  repeated int32 dInt32 = 2 [packed = true];
+  repeated int64 dInt64 = 3 [packed = true];
+  repeated double dDouble = 4 [packed = true];
 }
 
-message ShuffleRequest {
+message FileSplit {
+  string filename = 1;
+  fixed64 start = 2;
+  fixed64 end = 3;
+  map<string, string> options = 4;
+}
+
+message FileSplits {
+  repeated FileSplit split = 1;
+}
+
+message ShuffleData {
   DataList keys = 1;
   DataList values = 2;
-  string sourceWorker = 3;
-  fixed32 mapId = 4;
-  bool done = 5;
 }
 
 message ShuffleResponse {
 
 }
 
-message FileSplit {
-  string filename = 1;
-  fixed64 startPos = 2;
-  fixed64 endPos = 3;
-  map<string, string> userInfo = 4; 
+message PushRequest {
+  ShuffleData data = 1;
+  
+  // The task creating the data.
+  string source = 3;
+  
+  // Are we done sending data?
+  bool done = 2;
+  
+  // The target sink we're writing to.
+  string target = 4;
 }
 
-message FileSplits {
-  repeated FileSplit splits = 1;
+message PushResponse {
 }
 
-message MapRequest {
-  FileSplit shard = 1;
+message PullRequest {
+  // The source we want data from.
+  string source = 1;
+  
+  // If this is the first request, -1.  Otherwise,
+  // the ID of the local iterator to read from.
+  int64 iterator = 2;
 }
 
-message MapResponse {
-  double elapsedTime = 1;
-  repeated string messages = 2;
+message PullResponse {
+  int64 iterator = 1;
+  ShuffleData data = 2;
+  bool done = 3;
 }
 
 message WorkerInfo {
-  repeated fixed32 reduceShards = 1;
+  string hostport = 1;
+  repeated string task = 2;
+  repeated string store = 3;
+}
+
+message StoreDescription {
+  string type = 1;
+  string name = 2;
+  map<string, string> options = 3;
+  
+  // The source of the data.
+  // Ignored if this is a sink, or an internally created source.
+  FileSplit source = 4;
+}
+
+message TaskDescription {
+  string id = 1;
+  string type = 2;
+  map<string, string> options = 3;
+
+  repeated StoreDescription source = 4;
+  repeated StoreDescription sink = 5;
+}
+
+enum Status {
+  PENDING = 0;
+  ACTIVE = 1;
+  SUCCESS = 2;
+  FAILED = 3;
+}
+
+message TaskStatus {
+  string id = 1;
+  Status status = 2;
+  double progress = 5;
+  string error = 3;
+  map<string, string> messages = 4; 
+}
+
+message PingRequest {
+  repeated WorkerInfo worker = 1;
+}
+
+message PingResponse {
+  repeated TaskStatus task = 1;
+}
+
+message EmptyMessage {}
+
+service TyphoonWorker {
+  rpc start (TaskDescription) returns (EmptyMessage); 
+  rpc assign (StoreDescription) returns (EmptyMessage); 
+  
+  rpc ping (PingRequest) returns (PingResponse);
+  rpc push (PushRequest) returns (PushResponse);
+  rpc pull (PullRequest) returns (PullResponse);
+}
+
+message RegisterRequest {
+  fixed32 slots = 1;
   string host = 2;
   fixed32 port = 3;
 }
 
-service TyphoonWorker {
-  rpc map (MapRequest) returns (MapResponse);
-  rpc shuffle (ShuffleRequest) returns (ShuffleResponse);
+message RegisterResponse {
+  fixed32 id = 1;
+}
+
+message MasterStatus {}
+
+message RunGraphRequest {
+  repeated TaskDescription task = 1;
+}
+
+message RunGraphResponse {
+
 }
 
 service TyphoonMaster {
-  rpc Status (MapRequest) returns (MapResponse);
+  rpc registerWorker (RegisterRequest) returns (RegisterResponse);
+  rpc status (EmptyMessage) returns (MasterStatus);
+  rpc run (RunGraphRequest) returns (RunGraphResponse);
 }
