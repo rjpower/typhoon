@@ -9,6 +9,11 @@
 #include "typhoon/common.h"
 #include "typhoon/registry.h"
 
+static inline void delayedShutdown(int delay) {
+  sleep(delay);
+  exit(0);
+}
+
 struct Peer {
   WorkerInfo info;
   grpc::ClientContext context;
@@ -52,11 +57,14 @@ struct TaskHelper {
 private:
   void run() {
     task->initialize(request);
+    gpr_log(GPR_INFO, "Task %s started.", request.id().c_str());
     task->run(sources, sinks);
 
-    for (auto i = sinks.begin(); i != sinks.end(); ++i) {
+    gpr_log(GPR_INFO, "Flushing sinks for task: %s", request.id().c_str());
+    for (auto i : sinks) {
+      i->flush();
       // If the output of our task is a store, mark it as available to be read from.
-      auto casted = std::dynamic_pointer_cast<Source>(*i);
+      auto casted = std::dynamic_pointer_cast<Source>(i);
       if (casted != NULL) {
         casted->setReady(true);
       }
@@ -91,6 +99,7 @@ private:
   }
 
   Sink::Ptr lookupSink(const std::string& type, const std::string& name) {
+    gpr_log(GPR_INFO, "Looking up sink: %s", name.c_str());
     if (stores_.find(name) != stores_.end()) {
       return std::dynamic_pointer_cast<Sink>(stores_[name]);
     }
@@ -105,7 +114,6 @@ public:
   }
 
   void run();
-  void handleRPCs();
 
   void sendToReducers(const std::vector<ShuffleData>& data);
 
@@ -114,7 +122,26 @@ public:
 
   grpc::Status assign(::grpc::ServerContext* context, const ::StoreDescription* request, ::EmptyMessage* response) {
     std::shared_ptr<Base> store(Registry<Base>::create(request->type()));
+    std::shared_ptr<Source> source = std::dynamic_pointer_cast<Source>(store);
+    if (source.get()) {
+      source->init(request->source());
+    }
+
     stores_[request->name()] = store;
+
+    gpr_log(GPR_INFO, "Creating store: %s", request->name().c_str());
+
+    if (request->combiner() != "") {
+      gpr_log(GPR_INFO, "Creating combiner: %s", request->combiner().c_str());
+      Combiner* combiner = dynamic_cast<Combiner*>(Registry<Combiner>::create(request->combiner()));
+      std::dynamic_pointer_cast<Sink>(store)->combiner_ = combiner;
+    }
+
+    return grpc::Status::OK;
+  }
+
+  grpc::Status shutdown(::grpc::ServerContext* context, const ::EmptyMessage* request, ::EmptyMessage* response) {
+    new std::thread(&delayedShutdown, 1);
     return grpc::Status::OK;
   }
 

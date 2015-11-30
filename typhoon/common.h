@@ -77,12 +77,17 @@ public:
 class Source : virtual public Base {
 protected:
   bool ready_;
+  FileSplit split_;
+
 public:
   typedef std::shared_ptr<Source> Ptr;
   Source() : ready_(false) {}
 
   virtual ~Source() {}
   virtual Iterator* iterator() = 0;
+  void init(const FileSplit& split) {
+    split_.CopyFrom(split);
+  }
 
   void setReady(bool ready) {
     ready_ = ready;
@@ -93,11 +98,17 @@ public:
   }
 };
 
+class Combiner {
+};
+
 class Sink : virtual public Base {
 public:
+  Combiner* combiner_;
   typedef std::shared_ptr<Sink> Ptr;
   virtual ~Sink() {}
+
   virtual void applyUpdates(const ShuffleData& r) = 0;
+  virtual void flush() {}
 };
 
 class Task {
@@ -165,10 +176,22 @@ public:
   virtual ~SourceT() {}
 };
 
+template <class V>
+class CombinerT : public Combiner {
+public:
+  virtual void combine(V& current, const V& update) = 0;
+};
+
 template <class K, class V>
 class SinkT : public Sink {
 public:
   virtual void write(const K& k, const V& v) = 0;
+  virtual V& read(const K& k) {
+    abort();
+    V* v = NULL;
+    return *v;
+  }
+
   void applyUpdates(const ShuffleData& reader) {
     const DataList& keys = reader.keys();
     const DataList& vals = reader.values();
@@ -265,23 +288,20 @@ public:
   }
 };
 
-class Combiner {
-};
-
-template <class V>
-class CombinerT : public Combiner {
-public:
-  virtual void combine(V& current, const V& update) = 0;
-};
-
 template <class K, class V>
 class StoreT : public SinkT<K, V>, public SourceT<K, V> {
 };
 
+#include "google/dense_hash_map"
+
+template <class K, class V>
+using MapT = std::unordered_multimap<K, V>;
+//using MapT = google::dense_hash_map<K, V>;
+
 template <class K, class V>
 class MemIterator : public IteratorT<K, V> {
 public:
-  typedef std::unordered_multimap<K, V> Map;
+  typedef MapT<K, V> Map;
   typename Map::const_iterator cur_, end_;
   MemIterator(const Map& m) {
     cur_ = m.begin();
@@ -299,72 +319,48 @@ public:
   }
 };
 
+template <class K>
+struct EmptyKey {
+  static K get() {
+    return K();
+  }
+};
+
+template <>
+struct EmptyKey<int64_t> {
+  static int64_t get() {
+    return -1;
+  }
+};
+
 template <class K, class V>
 class MemStore : public StoreT<K, V> {
 private:
-  typedef std::unordered_multimap<K, V> Map;
-  CombinerT<V>* combiner_;
+  typedef MapT<K, V> Map;
   Map m_;
 
 public:
-  MemStore() : combiner_(NULL) {}
-  MemStore(CombinerT<V>* combiner) : combiner_(combiner) {}
+  MemStore() {
+    this->combiner_ = NULL;
+//    this->m_.set_empty_key(EmptyKey<K>::get());
+  }
 
   virtual Iterator* iterator() {
     return new MemIterator<K, V>(m_);
   }
 
   void write(const K& k, const V& v) {
-    if (combiner_ == NULL) {
+    if (this->combiner_ == NULL) {
       m_.insert(std::make_pair(k, v));
     } else {
       auto res = m_.find(k);
       if (res == m_.end()) {
         m_.insert(std::make_pair(k, v));
       } else {
-        combiner_->combine(res->second, v);
+        static_cast<CombinerT<V>*>(this->combiner_)->combine(res->second, v);
       }
     }
   }
 };
-
-template <class From>
-std::string to_string(const From& f);
-
-#define PRINTF_CONVERT(Type, Format)\
-  template <>\
-  inline std::string to_string(const Type& f) {\
-    char buf[32];\
-    sprintf(buf, "%" # Format, f);\
-    return buf;\
-  }
-
-PRINTF_CONVERT(int64_t, lld)
-PRINTF_CONVERT(int32_t, d)
-PRINTF_CONVERT(uint64_t, llu)
-PRINTF_CONVERT(uint32_t, u)
-PRINTF_CONVERT(double, f)
-PRINTF_CONVERT(float, f)
-
-template <>
-inline std::string to_string(const std::string& s) {
-  return s;
-}
-
-template <class K, class V>
-class TextSink : public SinkT<K, V> {
-private:
-  FILE* out_;
-
-public:
-  TextSink() {
-    out_ = fopen("./testdata/counts.txt", "w");
-  }
-
-  void write(const K& k, const V& v) {
-    fprintf(out_, "%s %s\n", to_string(k).c_str(), to_string(v).c_str());
-  }
-};
-
 
 #endif

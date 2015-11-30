@@ -22,7 +22,15 @@ public:
 
   static T* create(const std::string& k) {
     Map& m = getMap();
-    assert(m.find(k) != m.end());
+    if (m.find(k) == m.end()) {
+      gpr_log(GPR_INFO, "Failed to find registered class: '%s' in registry: '%s'",
+            k.c_str(), typeid(T).name());
+      gpr_log(GPR_INFO, "Available classes:");
+      for (auto i : m) {
+        gpr_log(GPR_INFO, ":: '%s'", i.first.c_str());
+      }
+      exit(1);
+    }
     return m[k]->create();
   }
 

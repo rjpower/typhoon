@@ -2,7 +2,6 @@ syntax = "proto3";
 
 option optimize_for = SPEED;
 
-
 // This is ugly, but the only way I can think of to efficiently
 // encode a large number of variants.
 message DataList {
@@ -34,13 +33,13 @@ message ShuffleResponse {
 
 message PushRequest {
   ShuffleData data = 1;
-  
+
   // The task creating the data.
   string source = 3;
-  
+
   // Are we done sending data?
   bool done = 2;
-  
+
   // The target sink we're writing to.
   string target = 4;
 }
@@ -51,7 +50,7 @@ message PushResponse {
 message PullRequest {
   // The source we want data from.
   string source = 1;
-  
+
   // If this is the first request, -1.  Otherwise,
   // the ID of the local iterator to read from.
   int64 iterator = 2;
@@ -73,11 +72,11 @@ message StoreDescription {
   string type = 1;
   string name = 2;
   map<string, string> options = 3;
-  
+
   // The source of the data.
   // Ignored if this is a sink, or an internally created source.
   FileSplit source = 4;
-  
+
   string combiner = 5;
 }
 
@@ -102,7 +101,7 @@ message TaskStatus {
   Status status = 2;
   double progress = 5;
   string error = 3;
-  map<string, string> messages = 4; 
+  map<string, string> messages = 4;
 }
 
 message PingRequest {
@@ -116,9 +115,10 @@ message PingResponse {
 message EmptyMessage {}
 
 service TyphoonWorker {
-  rpc start (TaskDescription) returns (EmptyMessage); 
-  rpc assign (StoreDescription) returns (EmptyMessage); 
-  
+  rpc start (TaskDescription) returns (EmptyMessage);
+  rpc assign (StoreDescription) returns (EmptyMessage);
+  rpc shutdown (EmptyMessage) returns (EmptyMessage);
+
   rpc ping (PingRequest) returns (PingResponse);
   rpc push (PushRequest) returns (PushResponse);
   rpc pull (PullRequest) returns (PullResponse);
@@ -145,7 +145,7 @@ message RunGraphResponse {
 }
 
 service TyphoonMaster {
-  rpc registerWorker (RegisterRequest) returns (RegisterResponse);
+  rpc hello (RegisterRequest) returns (RegisterResponse);
   rpc status (EmptyMessage) returns (MasterStatus);
-  rpc run (RunGraphRequest) returns (RunGraphResponse);
+  rpc execute (RunGraphRequest) returns (RunGraphResponse);
 }

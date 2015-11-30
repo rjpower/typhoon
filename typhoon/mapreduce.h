@@ -59,7 +59,9 @@ class ReducerT: public Task, public CombinerT<V> {
 public:
   virtual void run(std::vector<Source::Ptr> sources,
       std::vector<Sink::Ptr> sinks) {
-    auto sink = std::dynamic_pointer_cast<SinkT<K, V>>(sinks[0]);
+    MemStore<K, V> memSink;
+    memSink.combiner_ = this;
+
     K k;
     V v;
     for (auto src : sources) {
@@ -71,8 +73,15 @@ public:
       gpr_log(GPR_INFO, "Source became ready.");
       auto it = dynamic_cast<IteratorT<K, V>*>(src->iterator());
       while (it->next(&k, &v)) {
-        sink->write(k, v);
+        memSink.write(k, v);
       }
+    }
+
+    auto sink = std::dynamic_pointer_cast<SinkT<K, V>>(sinks[0]);
+    sink->combiner_ = this;
+    auto it = dynamic_cast<IteratorT<K, V>*>(memSink.iterator());
+    while (it->next(&k, &v)) {
+      sink->write(k, v);
     }
   }
 protected:
