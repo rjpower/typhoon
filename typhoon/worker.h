@@ -3,46 +3,84 @@
 
 #include <grpc++/grpc++.h>
 #include <memory>
+#include <thread>
 
 #include "typhoon/typhoon.grpc.pb.h"
 #include "typhoon/common.h"
 #include "typhoon/registry.h"
 
+struct Peer {
+  WorkerInfo info;
+  grpc::ClientContext context;
+  TyphoonWorker::Stub* client;
+
+  Peer(const WorkerInfo& info) {
+    this->info = info;
+    this->client = new TyphoonWorker::Stub(grpc::CreateChannel(info.hostport(), grpc::InsecureCredentials()));
+  }
+
+  Sink::Ptr makeSink(const std::string& type, const std::string& name) {
+    RemoteStore* store = Registry<RemoteStore>::create(type);
+    store->setRemote(client, name);
+    return Sink::Ptr(reinterpret_cast<Sink*>(store));
+  }
+
+  Source::Ptr makeSource(const std::string& type, const std::string& name) {
+    RemoteStore* store = Registry<RemoteStore>::create(type);
+    store->setRemote(client, name);
+    return Source::Ptr(reinterpret_cast<Source*>(store));
+  }
+};
+
+struct TaskHelper {
+  std::vector<std::shared_ptr<Source>> sources;
+  std::vector<std::shared_ptr<Sink>> sinks;
+
+  std::shared_ptr<Task> task;
+  std::shared_ptr<std::thread> thread;
+
+  ::TaskDescription request;
+
+  void start() {
+    thread.reset(new std::thread(&TaskHelper::run, this));
+  }
+
+  void wait() {
+    thread->join();
+  }
+
+private:
+  void run() {
+    task->initialize(request);
+    task->run(sources, sinks);
+
+    for (auto i = sinks.begin(); i != sinks.end(); ++i) {
+      // If the output of our task is a store, mark it as available to be read from.
+      auto casted = std::dynamic_pointer_cast<Source>(*i);
+      if (casted != NULL) {
+        casted->setReady(true);
+      }
+    }
+
+    gpr_log(GPR_INFO, "Task %s finished successfully.", request.id().c_str());
+  }
+};
+
 class Worker: public TyphoonWorker::Service {
 private:
   int32_t workerId_;
 
-  struct Peer {
-    WorkerInfo info;
-    grpc::ClientContext context;
-    TyphoonWorker::Stub* client;
-
-    Peer(const WorkerInfo& info) {
-      this->info = info;
-      this->client = new TyphoonWorker::Stub(grpc::CreateChannel(info.hostport(), grpc::InsecureCredentials()));
-    }
-
-    Sink::Ptr makeSink(const std::string& type, const std::string& name) {
-      RemoteStore* store = Registry<RemoteStore>::create(type);
-      store->setRemote(client, name);
-      return Sink::Ptr(reinterpret_cast<Sink*>(store));
-    }
-
-    Source::Ptr makeSource(const std::string& type, const std::string& name) {
-      RemoteStore* store = Registry<RemoteStore>::create(type);
-      store->setRemote(client, name);
-      return Source::Ptr(reinterpret_cast<Source*>(store));
-    }
-  };
-
   std::map<std::string, Peer*> workers_;
   std::map<std::string, Peer*> workerForObj_;
 
-  std::map<std::string, std::shared_ptr<Task>> tasks_;
+  std::map<std::string, std::shared_ptr<TaskHelper>> tasks_;
   std::map<std::string, std::shared_ptr<Base>> stores_;
   std::map<int64_t, std::shared_ptr<Iterator>> iterators_;
 
   int64_t iteratorId_;
+
+  TyphoonWorker::AsyncService service_;
+  std::unique_ptr<grpc::ServerCompletionQueue> cq_;
 
   Source::Ptr lookupSource(const std::string& type, const std::string& name) {
     if (stores_.find(name) != stores_.end()) {
@@ -67,6 +105,7 @@ public:
   }
 
   void run();
+  void handleRPCs();
 
   void sendToReducers(const std::vector<ShuffleData>& data);
 

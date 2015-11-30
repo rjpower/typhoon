@@ -1,3 +1,6 @@
+.SUFFIXES:
+MAKEFLAGS+=-r
+
 ROOT=.
 
 PROTO_ROOT=./third_party/grpc/third_party/protobuf/src/
@@ -14,9 +17,8 @@ LIBS=-Lthird_party/grpc/libs/opt/ -Lthird_party/grpc/third_party/protobuf/src/.l
   -lgrpc++_unsecure -lgrpc_unsecure -lprotobuf -lgpr -lpthread -lz
 
 
-GENERATED_PROTO=typhoon/typhoon.pb.h
-HEADERS := $(wildcard typhoon/*.h)
-SOURCE := $(wildcard typhoon/*.cc) $(wildcard typhoon/*.c++)
+GENERATED_PROTO=typhoon/typhoon.pb.cc typhoon/typhoon.grpc.pb.cc
+SOURCE := ${GENERATED_PROTO} typhoon/common.cc typhoon/mapreduce.cc typhoon/registry.cc typhoon/worker.cc
 OBJ := $(patsubst %.cc,build/%.o,${SOURCE})
 
 all: build/libtyphoon.a build/wordcount
@@ -32,13 +34,13 @@ clean:
 	rm -f typhoon/*.pb.*
 	rm -f typhoon/*_pb2.py
 
-build/%.o : %.cc ${GENERATED_PROTO} ${HEADERS}
+build/%.o : %.cc ${GENERATED_PROTO}
 	@mkdir -p build/$(dir $<)
-	g++ -c ${CXX_FLAGS} $< -o $@
+	g++ -MMD -MP -c ${CXX_FLAGS} $< -o $@
 
 build/%.o : %.capnp.c++
 	@mkdir -p build/$(dir $^)
-	g++ -c ${CXX_FLAGS} $^ -o $@
+	g++ -MD -MP -c ${CXX_FLAGS} $^ -o $@
 
 ${GENERATED_PROTO}: typhoon/typhoon.proto
 	${PROTOC} ./typhoon/typhoon.proto --grpc_out=. --cpp_out=. --plugin=protoc-gen-grpc=${GRPC_CPP_PLUGIN}
@@ -47,3 +49,4 @@ ${GENERATED_PROTO}: typhoon/typhoon.proto
 	sed -i -e 's/import typhoon\.typhoon_pb2//g' ./typhoon/typhoon_pb2.py
 	sed -i -e 's/typhoon\.typhoon_pb2\.//g' ./typhoon/typhoon_pb2.py
 
+include build/*/*.d

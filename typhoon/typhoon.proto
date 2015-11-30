@@ -77,6 +77,8 @@ message StoreDescription {
   // The source of the data.
   // Ignored if this is a sink, or an internally created source.
   FileSplit source = 4;
+  
+  string combiner = 5;
 }
 
 message TaskDescription {

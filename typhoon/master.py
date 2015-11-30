@@ -68,6 +68,7 @@ class Store(object):
     
 class Worker(object):
     def __init__(self, host, port, slots):
+        logging.info('Registering worker: %s:%s', host, port)
         self.host = host
         self.port = port
         self.slots = slots
@@ -86,6 +87,7 @@ class Worker(object):
         assert not task.can_schedule({})
 
         self._stub.start(task._description, 10)
+        logging.info('Done.')
     
     def assign_store(self, store):
         logging.info('Assigning store %s to %s:%d', store, self.host, self.port)
@@ -93,6 +95,7 @@ class Worker(object):
         store._worker = self
         assert not store.can_schedule()
         self._stub.assign(store._description, 10)
+        logging.info('Done.')
         
     def ping(self, req):
         try:
@@ -113,6 +116,7 @@ def test_graph():
     source_type = 'WordSource'
     mem_store = 'MemStore<std::string, int64_t>'
     sink_type = 'TextSink<std::string, int64_t>'
+    sum_combiner = 'CountReducer'
     
     inputs = './testdata/shakespeare.txt'
     outputs = './testdata/counts.txt'
@@ -122,7 +126,11 @@ def test_graph():
         name='mapinput.0',
     )
     
-    map_output = typhoon_pb2.StoreDescription()
+    map_output = typhoon_pb2.StoreDescription(
+        type=mem_store,
+        name='mapoutput.0',
+        combiner=sum_combiner
+    )
     map_output.type = mem_store
     map_output.name = 'mapoutput.0'
     
@@ -157,7 +165,6 @@ class MasterService(typhoon_pb2.BetaTyphoonMasterServicer):
         self._tasks = {}
         
 #         self._workers['testworker'] = TestWorker('localhost', 19999, 10) 
-        
         self._workers['testworker'] = Worker('[::]', 19999, 10) 
         self._scheduler = threading.Thread(target=self._schedule)
         self._scheduler.daemon = True
@@ -172,6 +179,7 @@ class MasterService(typhoon_pb2.BetaTyphoonMasterServicer):
             time.sleep(1)
         
     def registerWorker(self, request, context):
+        logging.info('Register request: %s', request)
         host = request.host
         port = request.port
         slots = request.slots

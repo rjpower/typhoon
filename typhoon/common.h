@@ -79,7 +79,7 @@ protected:
   bool ready_;
 public:
   typedef std::shared_ptr<Source> Ptr;
-  Source() : ready_(true) {}
+  Source() : ready_(false) {}
 
   virtual ~Source() {}
   virtual Iterator* iterator() = 0;
@@ -281,7 +281,7 @@ class StoreT : public SinkT<K, V>, public SourceT<K, V> {
 template <class K, class V>
 class MemIterator : public IteratorT<K, V> {
 public:
-  typedef std::unordered_map<K, V> Map;
+  typedef std::unordered_multimap<K, V> Map;
   typename Map::const_iterator cur_, end_;
   MemIterator(const Map& m) {
     cur_ = m.begin();
@@ -302,7 +302,7 @@ public:
 template <class K, class V>
 class MemStore : public StoreT<K, V> {
 private:
-  typedef std::unordered_map<K, V> Map;
+  typedef std::unordered_multimap<K, V> Map;
   CombinerT<V>* combiner_;
   Map m_;
 
@@ -315,10 +315,15 @@ public:
   }
 
   void write(const K& k, const V& v) {
-    if (m_.find(k) == m_.end() || combiner_ == NULL) {
-      m_[k] = v;
+    if (combiner_ == NULL) {
+      m_.insert(std::make_pair(k, v));
     } else {
-      combiner_->combine(m_[k], v);
+      auto res = m_.find(k);
+      if (res == m_.end()) {
+        m_.insert(std::make_pair(k, v));
+      } else {
+        combiner_->combine(res->second, v);
+      }
     }
   }
 };
@@ -353,7 +358,7 @@ private:
 
 public:
   TextSink() {
-    out_ = fopen("./testdata/counts.txt", "r");
+    out_ = fopen("./testdata/counts.txt", "w");
   }
 
   void write(const K& k, const V& v) {
