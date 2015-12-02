@@ -14,18 +14,17 @@ def test_kmer():
         source=typhoon_pb2.FileSplit(
           filename='./testdata/hs_alt_CHM1_1.1_chr1.fa',
           start=0,
-          end=int(100e6),
+          end=int(1e6),
         )
     )
 
     map_output = typhoon_pb2.StoreDescription(
-        type='MemStore<std::string, int64_t>',
+        type='MemStore',
         name='mapoutput.0',
-        combiner='CountStringReducer',
     )
 
     text_output = typhoon_pb2.StoreDescription(
-        type='TextSink<std::string, int64_t>',
+        type='TextSink',
         name='reduceoutput.0',
         source=typhoon_pb2.FileSplit(
           filename='./testdata/kmer.txt',
@@ -41,7 +40,7 @@ def test_kmer():
 
     reduce_task = typhoon_pb2.TaskDescription(
       id = 'reducer.0',
-      type = 'CountStringReducer',
+      type = 'CountReducer',
       source = [ map_output ],
       sink = [ text_output ],
     )

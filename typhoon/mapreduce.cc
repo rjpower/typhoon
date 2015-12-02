@@ -1,17 +1,39 @@
 #include <typhoon/mapreduce.h>
 
-class CountStringReducer: public ReducerT<std::string, int64_t> {
+class CountReducer: public Reducer {
 public:
-  void combine(int64_t& cur, const int64_t& next) {
-    cur += next;
-  }
-};
-REGISTER_REDUCER(CountStringReducer, std::string, int64_t);
+  void init(Column* c) { c->setType(UINT64); }
 
-class CountIntReducer: public ReducerT<int64_t, int64_t> {
-public:
-  void combine(int64_t& cur, const int64_t& next) {
-    cur += next;
+  void combine(
+      const Column& src,
+      Column* dst,
+      const std::vector<uint32_t>& indices) {
+    dst->push<uint64_t>(indices.size());
   }
 };
-REGISTER_REDUCER(CountIntReducer, int64_t, int64_t);
+REGISTER_REDUCER(CountReducer);
+
+void Reducer::run(std::vector<Source::Ptr> sources, std::vector<Sink::Ptr> sinks) {
+  Sink::Ptr sink = sinks[0];
+  MemStore buffer;
+
+  for (auto src : sources) {
+    gpr_log(GPR_INFO, "Reading from %p.  Ready? %s", src.get(), src->ready());
+    while (!src->ready()) {
+      gpr_log(GPR_INFO, "Not ready, sleeping...");
+      sleep(1);
+    }
+    gpr_log(GPR_INFO, "Source became ready.");
+    auto it = src->iterator();
+    ColGroup rows;
+    while (it->next(&rows)) {
+      gpr_log(GPR_INFO, "Got data: %d", rows.data[0].size());
+      buffer.write(rows);
+    }
+  }
+
+  // buffer.groupBy("key", this);
+  // combine using "this"
+  // output to final sink
+  // sink->write(rows);
+}

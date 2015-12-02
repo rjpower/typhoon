@@ -12,106 +12,111 @@
     }\
   } while(0)
 
-class WordIterator : public IteratorT<int64_t, std::string> {
-  FILE* f;
-  public:
-  WordIterator() {
-    f = fopen("./testdata/shakespeare.txt", "r");
-  }
-
-  virtual ~WordIterator() {
-    fclose(f);
-  }
-
-  bool next(int64_t* pos, std::string* word) {
-    char buf[256];
-    int res = fscanf(f, "%s", buf);
-
-    word->assign(buf);
-    if (res == EOF) {
-      return false;
-    }
-    return true;
-  }
-};
-
-class WordSource : public SourceT<int64_t, std::string> {
-public:
-  bool ready() {
-    return true;
-  }
-
-  Iterator* iterator() {
-    return new WordIterator();
-  }
-};
-
-class WordInput: public MapInputT<int64_t, std::string> {
-public:
-  virtual std::shared_ptr<Source> createSource(const FileSplit& split) {
-    return std::make_shared<WordSource>();
-  }
-
-  FileSplits computeSplits() {
-    FileSplits splits;
-    FileSplit* split = splits.add_split();
-    split->set_filename("./testdata/shakespeare.txt");
-    return splits;
-  }
-};
-
-class BlockIterator : public IteratorT<int64_t, std::string> {
-  FILE* f_;
-  std::string filename_;
-  uint64_t pos_;
-  uint64_t start_;
-  uint64_t stop_;
-  char buf_[1048576];
-
-  public:
-  BlockIterator(const std::string& filename, uint64_t start, uint64_t stop) :
-      filename_(filename), pos_(start), start_(start), stop_(stop) {
-    f_ = fopen(filename.c_str(), "r");
-    fseek(f_, start_, SEEK_SET);
-  }
-
-  virtual ~BlockIterator() {
-    fclose(f_);
-  }
-
-  bool next(int64_t* pos, std::string* word) {
-    if (pos_ == stop_) {
-      return false;
-    }
-
-    uint64_t bufSize = sizeof(buf_) - 1;
-    uint64_t bytesToRead = std::min(bufSize, stop_ - pos_);
-    int res = fread(buf_, 1, bytesToRead, f_);
-    if (res == 0) {
-      return false;
-    }
-    pos_ += res;
-
-    LOG_EVERY_N(10, "Reading... %ld", pos_ - start_);
-
-    *pos = pos_;
-    word->assign(buf_);
-    return true;
-  }
-};
 
 template <class T>
-class SimpleSource : public SourceT<int64_t, std::string> {
+class SimpleSource : public Source {
   bool ready() {
     return true;
   }
 
   Iterator* iterator() {
-    return new T(
+    T* it = new T();
+    it->init(
         this->split_.filename(),
         this->split_.start(),
         this->split_.end()
     );
+    return it;
+  }
+};
+
+class FileIterator : public Iterator {
+public:
+  FileIterator() : f_(NULL), batchSize_(1024) {}
+
+  virtual void init(const std::string& filename, uint64_t start, uint64_t stop) {
+    filename_ = filename;
+    pos_ = start;
+    start_ = start;
+    stop_ = stop;
+    f_ = fopen(filename.c_str(), "r");
+    fseek(f_, start_, SEEK_SET);
+  }
+
+  virtual ~FileIterator() {
+    fclose(f_);
+  }
+
+  bool next(ColGroup* rows) {
+    rows->data.clear();
+    rows->data.push_back(Column("offset"));
+    rows->data.push_back(Column("content"));
+    rows->data[0].setType(UINT32);
+    rows->data[1].setType(STR);
+
+    for (size_t i = 0; i < batchSize_; ++i) {
+      if (pos_ >= stop_) {
+        break;
+      }
+
+      if (!this->read(buf_)) {
+        break;
+      }
+
+      rows->data[0].push(pos_);
+      rows->data[1].push(buf_);
+      pos_ += buf_.size();
+    }
+
+    gpr_log(GPR_INFO, "Reading: %llu %llu %d", pos_, stop_, rows->data[0].size());
+    return rows->data[0].size() > 0;
+  }
+protected:
+  virtual bool read(std::string& next) = 0;
+
+  FILE* f_;
+  std::string filename_;
+  std::string buf_;
+  uint64_t batchSize_;
+  uint64_t pos_;
+  uint64_t start_;
+  uint64_t stop_;
+};
+
+class WordIterator : public FileIterator {
+public:
+  bool read(std::string& buf) {
+    buf.resize(1024);
+    int res = fscanf(f_, "%s", &buf[0]);
+    if (res == EOF) {
+      return false;
+    }
+    buf.resize(res);
+    return true;
+  }
+
+};
+
+class WordSource : public SimpleSource<WordIterator> {};
+
+class BlockIterator : public FileIterator {
+public:
+  BlockIterator() : FileIterator() {
+    batchSize_ = 1;
+  }
+
+  bool read(std::string& buf) {
+    static const uint64_t kBufSize = 1 << 20;
+    buf.resize(kBufSize);
+    uint64_t bytesToRead = std::min(kBufSize - 1, stop_ - pos_);
+    size_t bytesRead = fread(&buf[0], 1, bytesToRead, f_);
+    if (bytesRead == 0) {
+      return false;
+    }
+    buf.resize(bytesRead);
+//    gpr_log(GPR_INFO, "Read: %llu, %llu, got %lu %.80s",
+//        stop_ - pos_, bytesToRead, bytesRead, buf.c_str());
+    return true;
   }
 };
 
@@ -119,56 +124,16 @@ class BlockSource : public SimpleSource<BlockIterator> {
 public:
 };
 
-class BlockInput: public MapInputT<int64_t, std::string> {
-public:
-  virtual std::shared_ptr<Source> createSource(const FileSplit& split) {
-    return std::make_shared<BlockSource>();
-  }
-
-  FileSplits computeSplits() {
-    FileSplits splits;
-    FileSplit* split = splits.add_split();
-    split->set_filename("./testdata/hs_alt_CHM1_1.1.chr1.fa");
-    return splits;
-  }
-};
-
-
-class LineIterator : public IteratorT<int64_t, std::string> {
+class LineIterator : public FileIterator {
 private:
-  FILE* f_;
-   std::string filename_;
-   uint64_t pos_;
-   uint64_t start_;
-   uint64_t stop_;
-   char buf_[1048576];
-
- public:
-   LineIterator(const std::string& filename, uint64_t start, uint64_t stop) :
-       filename_(filename), pos_(start), start_(start), stop_(stop) {
-     f_ = fopen(filename.c_str(), "r");
-     fseek(f_, start_, SEEK_SET);
-   }
-
-   virtual ~LineIterator() {
-     fclose(f_);
-   }
-
-  bool next(int64_t* pos, std::string* word) {
-    if (pos_ >= stop_) {
-      return false;
-    }
-
-    char buf[256];
-    uint64_t bufSize = sizeof(buf_) - 1;
-    uint64_t bytesToRead = std::min(bufSize, stop_ - pos_);
-    char* res = fgets(buf_, bytesToRead, f_);
+  bool read(std::string& buf) {
+    buf.resize(4096);
+    uint64_t bytesToRead = std::min(4095ull, stop_ - pos_);
+    char* res = fgets(&buf[0], bytesToRead, f_);
     if (res == NULL) {
       return false;
     }
-
-    *pos = pos_;
-    word->assign(buf);
+    buf.resize(res - &buf[0]);
     return true;
   }
 };
@@ -176,21 +141,6 @@ private:
 class LineSource : public SimpleSource<LineIterator> {
 public:
 };
-
-class LineInput: public MapInputT<int64_t, std::string> {
-public:
-  virtual std::shared_ptr<Source> createSource(const FileSplit& split) {
-    return std::make_shared<LineSource>();
-  }
-
-  FileSplits computeSplits() {
-    FileSplits splits;
-    FileSplit* split = splits.add_split();
-    split->set_filename("./testdata/hs_alt_CHM1_1.1.chr1.fa");
-    return splits;
-  }
-};
-
 
 REGISTER(Base, WordSource);
 REGISTER(Base, LineSource);

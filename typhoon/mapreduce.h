@@ -12,95 +12,57 @@ public:
   }
 
   virtual FileSplits computeSplits() = 0;
+  virtual std::shared_ptr<Source> createSource(const FileSplit& split) = 0;
 };
 
 class MapOutput {
 public:
 };
 
-template<class K, class V>
-class MapInputT: public MapInput {
+class Mapper: public Task {
 public:
-  virtual ~MapInputT() {
-  }
-  virtual std::shared_ptr<Source> createSource(const FileSplit& split) = 0;
-};
-
-template<class T>
-class SumCombiner: public CombinerT<T> {
-  void combine(T& current, const T& update) {
-    current += update;
-  }
-};
-
-template<class KOut, class VOut>
-class MapperT: public Task {
-public:
-  virtual ~MapperT() {
+  virtual ~Mapper() {
   }
   virtual void mapShard(Source* input) = 0;
 
-  virtual void run(std::vector<Source::Ptr> sources,
-      std::vector<Sink::Ptr> sinks) {
-    sink_ = std::dynamic_pointer_cast<SinkT<KOut, VOut>>(sinks[0]);
+  virtual void run(std::vector<Source::Ptr> sources, std::vector<Sink::Ptr> sinks) {
+    sink_ = sinks[0];
+    output_.data.push_back(Column("key"));
+    output_.data.push_back(Column("value"));
     mapShard(sources[0].get());
+
+    flush();
   }
 
-  void put(const KOut& k, const VOut& v) {
-    sink_->write(k, v);
+  template <class K, class V>
+  void put(const K& k, const V& v) {
+    output_.data[0].setType(TypeUtilT<K>::colType());
+    output_.data[1].setType(TypeUtilT<V>::colType());
+    output_.data[0].push(k);
+    output_.data[1].push(v);
+  }
+
+  void flush() {
+    sink_->write(output_);
   }
 
 protected:
-  std::shared_ptr<SinkT<KOut, VOut>> sink_;
+  ColGroup output_;
+  std::shared_ptr<Sink> sink_;
 };
 
-template<class K, class V>
-class ReducerT: public Task, public CombinerT<V> {
+class Reducer: public Task, public Combiner {
 public:
   virtual void run(std::vector<Source::Ptr> sources,
-      std::vector<Sink::Ptr> sinks) {
-    MemStore<K, V> memSink;
-    memSink.combiner_ = this;
-
-    K k;
-    V v;
-    for (auto src : sources) {
-      gpr_log(GPR_INFO, "Reading from %p.  Ready? %s", src.get(), src->ready());
-      while (!src->ready()) {
-        gpr_log(GPR_INFO, "Not ready, sleeping...");
-        sleep(1);
-      }
-      gpr_log(GPR_INFO, "Source became ready.");
-      auto it = dynamic_cast<IteratorT<K, V>*>(src->iterator());
-      while (it->next(&k, &v)) {
-        memSink.write(k, v);
-      }
-    }
-
-    auto sink = std::dynamic_pointer_cast<SinkT<K, V>>(sinks[0]);
-    sink->combiner_ = this;
-    auto it = dynamic_cast<IteratorT<K, V>*>(memSink.iterator());
-    while (it->next(&k, &v)) {
-      sink->write(k, v);
-    }
-  }
+      std::vector<Sink::Ptr> sinks);
 protected:
-  std::shared_ptr<SinkT<K, V>> sink_;
 };
 
-#define REGISTER_REDUCER(Klass, K, V)\
-  static RegistryHelper<Task, Klass> registerReducer_ ## Klass(#Klass);\
-  static RegistryHelper<Combiner, Klass> registerCombiner_ ## Klass(#Klass);\
-  static RegistryHelper<Base, MemStore<K, V>> registerBase_ ## Klass("MemStore<" #K ", " #V ">");
+#define REGISTER_REDUCER(Klass)\
+  static RegistryHelper<Task, Klass> registerReducer_ ## Klass(#Klass);
 
-#define REGISTER_MAPPER(Klass, KOut, VOut)\
-  static RegistryHelper<Task, Klass> registerTask_ ## Klass(#Klass);\
-  static RegistryHelper<Sink, MemStore<KOut, VOut>> registerSink_ ## Klass("MemStore<" #KOut ", " #VOut ">");\
-  static RegistryHelper<Base, MemStore<KOut, VOut>> registerBase_ ## Klass("MemStore<" #KOut ", " #VOut ">");\
-  static RegistryHelper<RemoteStore, RemoteStoreT<KOut, VOut>> registerRemote_ ## Klass("RemoteStore<" #KOut ", " #VOut ">");
+#define REGISTER_MAPPER(Klass)\
+  static RegistryHelper<Task, Klass> registerMapper_ ## Klass(#Klass);
 
-static inline void mapreduce(MapInput* input, MapOutput* output,
-    const std::string& mapper, const std::string& reducer) {
-}
 
 #endif

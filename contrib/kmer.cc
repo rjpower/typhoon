@@ -24,43 +24,47 @@ std::string strip(const std::string& in, char strip) {
 // To improve performance, this is done in 2 stages: first counts are
 // computed using a rolling hash.  Hashes that occur with sufficient
 // frequency are then output.
-class KMERMapper: public MapperT<std::string, int64_t> {
+class KMERMapper: public Mapper {
 public:
   void mapShard(Source* input) {
     std::unordered_map<int64_t, int64_t> hashes;
-    int64_t pos;
-    std::string block;
-
-    IteratorT<int64_t, std::string>* it = dynamic_cast<IteratorT<int64_t, std::string>*>(input->iterator());
-    while (it->next(&pos, &block)) {
+    ColGroup rows;
+    auto it = std::shared_ptr<Iterator>(input->iterator());
+    while (it->next(&rows)) {
       KarpRabinHash<uint64_t> hasher(kReadLen, 63);
-      block = strip(block, '\n');
-      for (int i = 0; i < kReadLen; ++i) {
-        hasher.eat(block[i]);
-      }
+      for (auto block: *rows.data[1].data.str) {
+        block = strip(block, '\n');
+        for (int i = 0; i < kReadLen; ++i) {
+          hasher.eat(block[i]);
+        }
 
-      for (int i = kReadLen; i < block.size(); ++i) {
-        hasher.update(block[i - kReadLen], block[i]);
-        hashes[hasher.hashvalue] += 1;
+        for (int i = kReadLen; i < block.size(); ++i) {
+          hasher.update(block[i - kReadLen], block[i]);
+          hashes[hasher.hashvalue] += 1;
+        }
       }
     }
 
-    it = dynamic_cast<IteratorT<int64_t, std::string>*>(input->iterator());
-    while (it->next(&pos, &block)) {
+    it.reset(input->iterator());
+    while (it->next(&rows)) {
       KarpRabinHash<uint64_t> hasher(kReadLen, 63);
-      block = strip(block, '\n');
-      for (int i = 0; i < kReadLen; ++i) {
-        hasher.eat(block[i]);
-      }
+      for (auto block: *rows.data[1].data.str) {
+        block = strip(block, '\n');
+        gpr_log(GPR_INFO, "Block: %d %s", block.size(), block.substr(0, 1024).c_str());
+        for (int i = 0; i < kReadLen; ++i) {
+          hasher.eat(block[i]);
+        }
 
-      for (int i = kReadLen; i < block.size(); ++i) {
-        hasher.update(block[i - kReadLen], block[i]);
-        auto res = hashes.find(hasher.hashvalue);
-        if (res != hashes.end() && res->second >= kMinCount) {
-          this->put(block.substr(i - kReadLen, kReadLen), 1);
+        for (int i = kReadLen; i < block.size(); ++i) {
+          hasher.update(block[i - kReadLen], block[i]);
+          auto res = hashes.find(hasher.hashvalue);
+          if (res != hashes.end() && res->second >= kMinCount) {
+            this->put<std::string, uint64_t>(
+                block.substr(i - kReadLen, kReadLen), 1);
+          }
         }
       }
     }
   }
 };
-REGISTER_MAPPER(KMERMapper, std::string, int64_t)
+REGISTER_MAPPER(KMERMapper);

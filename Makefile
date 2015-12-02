@@ -30,7 +30,8 @@ SOURCE := ${GENERATED_PROTO}\
   typhoon/mapreduce.cc\
   typhoon/registry.cc\
   typhoon/inputs.cc\
-  typhoon/worker.cc
+  typhoon/worker.cc\
+  typhoon/colgroup.cc
 
 OBJ := $(patsubst %.cc,build/%.o,${SOURCE})
 

@@ -1,31 +1,7 @@
 #include "typhoon/common.h"
 #include <stdio.h>
 
-template <class From>
-std::string to_string(const From& f);
-
-#define PRINTF_CONVERT(Type, Format)\
-  template <>\
-  inline std::string to_string(const Type& f) {\
-    char buf[32];\
-    sprintf(buf, "%" # Format, f);\
-    return buf;\
-  }
-
-PRINTF_CONVERT(int64_t, lld)
-PRINTF_CONVERT(int32_t, d)
-PRINTF_CONVERT(uint64_t, llu)
-PRINTF_CONVERT(uint32_t, u)
-PRINTF_CONVERT(double, f)
-PRINTF_CONVERT(float, f)
-
-template <>
-inline std::string to_string(const std::string& s) {
-  return s;
-}
-
-template <class K, class V>
-class TextSink : public SinkT<K, V> {
+class TextSink : public Sink {
 private:
   FILE* out_;
 
@@ -38,8 +14,23 @@ public:
     fclose(out_);
   }
 
-  void write(const K& k, const V& v) {
-    fprintf(out_, "%s %s\n", to_string(k).c_str(), to_string(v).c_str());
+  void write(const ColGroup& rows) {
+    if (rows.data.empty()) {
+      return;
+    }
+
+    for (size_t i = 0; i < rows.data[0].size(); ++i) {
+      for (size_t j = 0; j < rows.data.size(); ++j) {
+        TypeUtil& typeUtil = typeFromCode(rows.data[j].type);
+        fprintf(out_, "%s: %s",
+            rows.data[j].name.c_str(),
+            typeUtil.toString(rows.data[j], i).c_str());
+        if (j != rows.data.size() - 1) {
+          fprintf(out_, " ");
+        }
+      }
+      fprintf(out_, "\n");
+    }
   }
 
   virtual void flush() {

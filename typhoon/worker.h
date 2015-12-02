@@ -25,15 +25,15 @@ struct Peer {
   }
 
   Sink::Ptr makeSink(const std::string& type, const std::string& name) {
-    RemoteStore* store = Registry<RemoteStore>::create(type);
+    RemoteStore* store = dynamic_cast<RemoteStore*>(Registry<Base>::create(type));
     store->setRemote(client, name);
-    return Sink::Ptr(reinterpret_cast<Sink*>(store));
+    return Sink::Ptr(store);
   }
 
   Source::Ptr makeSource(const std::string& type, const std::string& name) {
-    RemoteStore* store = Registry<RemoteStore>::create(type);
+    RemoteStore* store = dynamic_cast<RemoteStore*>(Registry<Base>::create(type));
     store->setRemote(client, name);
-    return Source::Ptr(reinterpret_cast<Source*>(store));
+    return Source::Ptr(store);
   }
 };
 
@@ -130,13 +130,6 @@ public:
     stores_[request->name()] = store;
 
     gpr_log(GPR_INFO, "Creating store: %s", request->name().c_str());
-
-    if (request->combiner() != "") {
-      gpr_log(GPR_INFO, "Creating combiner: %s", request->combiner().c_str());
-      Combiner* combiner = dynamic_cast<Combiner*>(Registry<Combiner>::create(request->combiner()));
-      std::dynamic_pointer_cast<Sink>(store)->combiner_ = combiner;
-    }
-
     return grpc::Status::OK;
   }
 
