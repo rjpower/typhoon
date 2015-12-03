@@ -2,13 +2,22 @@
 
 class CountReducer: public Reducer {
 public:
-  void init(Column* c) { c->setType(UINT64); }
+  ColGroup* init(const ColGroup& input) {
+    ColGroup* c = new ColGroup();
+    c->data.push_back(Column("key"));
+    c->data.push_back(Column("count"));
+    c->data[0].setType(input.data[0].type);
+    c->data[1].setType(UINT64);
+    return c;
+  }
 
   void combine(
       const Column& src,
-      Column* dst,
-      const std::vector<uint32_t>& indices) {
-    dst->push<uint64_t>(indices.size());
+      ColGroup* dst,
+      IndexVec::const_iterator st,
+      IndexVec::const_iterator ed) {
+    typeFromCode(src.type).copy(src, &dst->data[0], *st);
+    dst->data[1].push<uint64_t>(ed - st);
   }
 };
 REGISTER_REDUCER(CountReducer);
@@ -32,8 +41,7 @@ void Reducer::run(std::vector<Source::Ptr> sources, std::vector<Sink::Ptr> sinks
     }
   }
 
-  // buffer.groupBy("key", this);
-  // combine using "this"
-  // output to final sink
-  // sink->write(rows);
+
+  ColGroup* result = groupBy<std::string>(buffer.data(), 0, this);
+  sink->write(*result);
 }

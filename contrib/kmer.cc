@@ -50,7 +50,7 @@ public:
       KarpRabinHash<uint64_t> hasher(kReadLen, 63);
       for (auto block: *rows.data[1].data.str) {
         block = strip(block, '\n');
-        gpr_log(GPR_INFO, "Block: %d %s", block.size(), block.substr(0, 1024).c_str());
+        gpr_log(GPR_INFO, "Block: %d %s", block.size(), block.substr(0, 80).c_str());
         for (int i = 0; i < kReadLen; ++i) {
           hasher.eat(block[i]);
         }

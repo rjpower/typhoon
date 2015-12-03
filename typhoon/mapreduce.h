@@ -36,8 +36,8 @@ public:
 
   template <class K, class V>
   void put(const K& k, const V& v) {
-    output_.data[0].setType(TypeUtilT<K>::colType());
-    output_.data[1].setType(TypeUtilT<V>::colType());
+    output_.data[0].setType(TypeHelper<K>::code());
+    output_.data[1].setType(TypeHelper<V>::code());
     output_.data[0].push(k);
     output_.data[1].push(v);
   }

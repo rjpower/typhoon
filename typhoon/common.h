@@ -153,35 +153,35 @@ typedef std::vector<ColGroup> RowBatch;
 
 class MemIterator : public Iterator {
 public:
-  typename RowBatch::const_iterator cur_, end_;
-  MemIterator(const RowBatch& m) {
-    cur_ = m.begin();
-    end_ = m.end();
-  }
+  const ColGroup* data_;
+  MemIterator(const ColGroup& data) : data_(&data) {}
 
   bool next(ColGroup* cols) {
-    if (cur_ == end_) {
-      return false;
+    if (data_) {
+      *cols = *data_;
+      data_ = NULL;
+      return true;
     }
-    *cols = *cur_++;
-    return true;
+    return false;
   }
 };
 
 class MemStore : public Source, public Sink {
 private:
-  RowBatch m_;
+  ColGroup data_;
 
 public:
   MemStore() {
   }
 
+  ColGroup& data() { return data_; }
+
   virtual Iterator* iterator() {
-    return new MemIterator(m_);
+    return new MemIterator(data_);
   }
 
   virtual void write(const ColGroup& rows) {
-    m_.push_back(rows);
+    data_.append(rows);
   }
 };
 

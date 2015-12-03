@@ -14,7 +14,7 @@ def test_kmer():
         source=typhoon_pb2.FileSplit(
           filename='./testdata/hs_alt_CHM1_1.1_chr1.fa',
           start=0,
-          end=int(1e6),
+          end=int(10e6),
         )
     )
 
