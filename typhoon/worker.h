@@ -122,10 +122,21 @@ public:
 
   grpc::Status assign(::grpc::ServerContext* context, const ::StoreDescription* request, ::EmptyMessage* response) {
     std::shared_ptr<Base> store(Registry<Base>::create(request->type()));
+
     std::shared_ptr<Source> source = std::dynamic_pointer_cast<Source>(store);
     if (source.get()) {
-      source->init(request->source());
+      source->init(*request);
     }
+
+    std::shared_ptr<Sink> sink = std::dynamic_pointer_cast<Sink>(store);
+    if (sink.get()) {
+      if (!request->combiner().empty()) {
+        sink->setCombiner(Registry<Combiner>::create(request->combiner()));
+      }
+    } else {
+      GPR_ASSERT(request->combiner().empty());
+    }
+
 
     stores_[request->name()] = store;
 

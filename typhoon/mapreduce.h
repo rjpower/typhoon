@@ -4,6 +4,8 @@
 #include "typhoon/common.h"
 #include "typhoon/registry.h"
 
+static const int kBatchSize = 512000;
+
 class MapInput {
 public:
   MapInput() {
@@ -19,6 +21,7 @@ class MapOutput {
 public:
 };
 
+template <class K, class V>
 class Mapper: public Task {
 public:
   virtual ~Mapper() {
@@ -27,19 +30,22 @@ public:
 
   virtual void run(std::vector<Source::Ptr> sources, std::vector<Sink::Ptr> sinks) {
     sink_ = sinks[0];
-    output_.data.push_back(Column("key"));
-    output_.data.push_back(Column("value"));
+    output_.addCol(Column::create("key", TypeUtil<K>::code()));
+    output_.addCol(Column::create("value", TypeUtil<V>::code()));
     mapShard(sources[0].get());
 
     flush();
   }
 
-  template <class K, class V>
   void put(const K& k, const V& v) {
-    output_.data[0].setType(TypeHelper<K>::code());
-    output_.data[1].setType(TypeHelper<V>::code());
-    output_.data[0].push(k);
-    output_.data[1].push(v);
+    output_.col(0).template as<K>().push(k);
+    output_.col(1).template as<V>().push(v);
+
+    if (output_.size() > kBatchSize) {
+      sink_->write(output_);
+      output_.col(0).clear();
+      output_.col(1).clear();
+    }
   }
 
   void flush() {
@@ -59,6 +65,7 @@ protected:
 };
 
 #define REGISTER_REDUCER(Klass)\
+  static RegistryHelper<Combiner, Klass> registerCombiner_ ## Klass(#Klass);\
   static RegistryHelper<Task, Klass> registerReducer_ ## Klass(#Klass);
 
 #define REGISTER_MAPPER(Klass)\

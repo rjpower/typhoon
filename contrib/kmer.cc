@@ -1,11 +1,10 @@
 #include "typhoon/mapreduce.h"
-#include "typhoon/worker.h"
 #include "third_party/rollinghashcpp/rabinkarphash.h"
 #include "third_party/rollinghashcpp/cyclichash.h"
 #include "third_party/rollinghashcpp/generalhash.h"
 
-static const int kReadLen = 4;
-static const int kMinCount = 16;
+static const int kReadLen = 8;
+static const int kMinCount = 8;
 
 // Thank you C++, for your wonderfully incomplete string functions.
 std::string strip(const std::string& in, char strip) {
@@ -24,7 +23,7 @@ std::string strip(const std::string& in, char strip) {
 // To improve performance, this is done in 2 stages: first counts are
 // computed using a rolling hash.  Hashes that occur with sufficient
 // frequency are then output.
-class KMERMapper: public Mapper {
+class KMERMapper: public Mapper<std::string, uint64_t> {
 public:
   void mapShard(Source* input) {
     std::unordered_map<int64_t, int64_t> hashes;
@@ -32,7 +31,7 @@ public:
     auto it = std::shared_ptr<Iterator>(input->iterator());
     while (it->next(&rows)) {
       KarpRabinHash<uint64_t> hasher(kReadLen, 63);
-      for (auto block: *rows.data[1].data.str) {
+      for (auto block: rows.col(1).as<std::string>()) {
         block = strip(block, '\n');
         for (int i = 0; i < kReadLen; ++i) {
           hasher.eat(block[i]);
@@ -48,7 +47,7 @@ public:
     it.reset(input->iterator());
     while (it->next(&rows)) {
       KarpRabinHash<uint64_t> hasher(kReadLen, 63);
-      for (auto block: *rows.data[1].data.str) {
+      for (auto block: rows.col(1).as<std::string>()) {
         block = strip(block, '\n');
         gpr_log(GPR_INFO, "Block: %d %s", block.size(), block.substr(0, 80).c_str());
         for (int i = 0; i < kReadLen; ++i) {
@@ -59,8 +58,7 @@ public:
           hasher.update(block[i - kReadLen], block[i]);
           auto res = hashes.find(hasher.hashvalue);
           if (res != hashes.end() && res->second >= kMinCount) {
-            this->put<std::string, uint64_t>(
-                block.substr(i - kReadLen, kReadLen), 1);
+            this->put(block.substr(i - kReadLen, kReadLen), 1);
           }
         }
       }

@@ -21,6 +21,7 @@ def test_kmer():
     map_output = typhoon_pb2.StoreDescription(
         type='MemStore',
         name='mapoutput.0',
+        combiner='CountReducer',
     )
 
     text_output = typhoon_pb2.StoreDescription(
@@ -40,7 +41,7 @@ def test_kmer():
 
     reduce_task = typhoon_pb2.TaskDescription(
       id = 'reducer.0',
-      type = 'CountReducer',
+      type = 'SumReducer',
       source = [ map_output ],
       sink = [ text_output ],
     )

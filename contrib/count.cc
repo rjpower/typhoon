@@ -2,9 +2,8 @@
 
 #include "typhoon/mapreduce.h"
 #include "typhoon/common.h"
-#include "typhoon/worker.h"
 
-class CountMapper: public Mapper {
+class CountMapper: public Mapper<std::string, uint64_t> {
 public:
   void mapShard(Source* source) {
     gpr_log(GPR_INFO, "Mapping...");

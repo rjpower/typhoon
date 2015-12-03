@@ -40,15 +40,15 @@ class Source : virtual public Base {
 protected:
   bool ready_;
   FileSplit split_;
-
 public:
   typedef std::shared_ptr<Source> Ptr;
   Source() : ready_(false) {}
 
   virtual ~Source() {}
   virtual Iterator* iterator() = 0;
-  void init(const FileSplit& split) {
-    split_.CopyFrom(split);
+
+  void init(const StoreDescription& desc) {
+    split_.CopyFrom(desc.source());
   }
 
   void setReady(bool ready) {
@@ -61,6 +61,9 @@ public:
 };
 
 class Sink : virtual public Base {
+protected:
+  std::shared_ptr<Combiner> combiner_;
+
 public:
   typedef std::shared_ptr<Sink> Ptr;
   virtual ~Sink() {}
@@ -69,6 +72,10 @@ public:
     ColGroup rows;
     rows.decode(r);
     write(rows);
+  }
+
+  void setCombiner(Combiner* c) {
+    combiner_.reset(c);
   }
 
   virtual void write(const ColGroup& rows) = 0;
@@ -153,35 +160,51 @@ typedef std::vector<ColGroup> RowBatch;
 
 class MemIterator : public Iterator {
 public:
-  const ColGroup* data_;
-  MemIterator(const ColGroup& data) : data_(&data) {}
+  RowBatch::const_iterator cur_;
+  RowBatch::const_iterator end_;
+
+  MemIterator(const RowBatch& data) :
+    cur_(data.begin()), end_(data.end()) {}
 
   bool next(ColGroup* cols) {
-    if (data_) {
-      *cols = *data_;
-      data_ = NULL;
-      return true;
+    if (cur_ == end_) {
+      return false;
     }
-    return false;
+
+    *cols = *cur_;
+    ++cur_;
+    return true;
   }
 };
 
 class MemStore : public Source, public Sink {
 private:
-  ColGroup data_;
+  RowBatch data_;
 
 public:
   MemStore() {
   }
 
-  ColGroup& data() { return data_; }
+  ColGroup data() {
+    ColGroup out;
+    for (auto rows: data_) {
+      out.append(rows);
+    }
+    return out;
+  }
 
   virtual Iterator* iterator() {
     return new MemIterator(data_);
   }
 
   virtual void write(const ColGroup& rows) {
-    data_.append(rows);
+    if (combiner_.get() != NULL) {
+      gpr_log(GPR_INFO, "Combining... %d", rows.size());
+      data_.push_back(*rows.groupBy("key", combiner_.get()));
+      gpr_log(GPR_INFO, "Done... %d", data_.back().size());
+    } else {
+      data_.push_back(rows);
+    }
   }
 };
 

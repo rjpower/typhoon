@@ -1,6 +1,5 @@
 #include "typhoon/registry.h"
 #include "typhoon/common.h"
-#include "typhoon/mapreduce.h"
 
 #include <algorithm>
 
@@ -48,11 +47,9 @@ public:
   }
 
   bool next(ColGroup* rows) {
-    rows->data.clear();
-    rows->data.push_back(Column("offset"));
-    rows->data.push_back(Column("content"));
-    rows->data[0].setType(UINT32);
-    rows->data[1].setType(STR);
+    rows->clear();
+    rows->addCol(Column::create("offset", UINT64));
+    rows->addCol(Column::create("content", STR));
 
     for (size_t i = 0; i < batchSize_; ++i) {
       if (pos_ >= stop_) {
@@ -63,13 +60,13 @@ public:
         break;
       }
 
-      rows->data[0].push(pos_);
-      rows->data[1].push(buf_);
+      rows->col(0).as<uint64_t>().push(pos_);
+      rows->col(1).as<std::string>().push(buf_);
       pos_ += buf_.size();
     }
 
-    gpr_log(GPR_INFO, "Reading: %llu %llu %d", pos_, stop_, rows->data[0].size());
-    return rows->data[0].size() > 0;
+    gpr_log(GPR_INFO, "Reading: %llu %llu %d", pos_, stop_, rows->size());
+    return rows->size() > 0;
   }
 protected:
   virtual bool read(std::string& next) = 0;
