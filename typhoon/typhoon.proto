@@ -143,7 +143,13 @@ message RegisterResponse {
   fixed32 id = 1;
 }
 
-message MasterStatus {}
+message JobStatus {
+  repeated TaskStatus task = 1; 
+}
+
+message MasterStatus {
+  repeated JobStatus job = 1; 
+}
 
 message RunGraphRequest {
   repeated TaskDescription task = 1;

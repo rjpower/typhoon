@@ -27,6 +27,8 @@ class KMERMapper: public Mapper<std::string, uint64_t> {
 public:
   void mapShard(Source* input) {
     std::unordered_map<int64_t, int64_t> hashes;
+
+    hashes.reserve(10 * 1000 * 1000);
     ColGroup rows;
     auto it = std::shared_ptr<Iterator>(input->iterator());
     while (it->next(&rows)) {

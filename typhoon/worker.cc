@@ -72,17 +72,19 @@ grpc::Status Worker::ping(grpc::ServerContext* context,
     }
     Peer* p = workers_[worker.hostport()];
     p->info = worker;
-
-    for (auto task: worker.task()) {
-    }
-
     for (auto store: worker.store()) {
       workerForObj_[store] = p;
     }
   }
 
-  for (auto i = tasks_.begin(); i != tasks_.end(); ++i) {
-    i->second->task->status(response->add_task());
+  for (auto task: tasks_) {
+    TaskStatus* status = response->add_task();
+    status->set_id(task.first);
+    status->set_progress(0);
+    status->set_status(task.second->running ?
+        Status::ACTIVE : Status::SUCCESS
+    );
   }
+
   return grpc::Status::OK;
 }

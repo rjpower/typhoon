@@ -15,8 +15,10 @@ SPARSEHASH_ROOT=./third_party/sparsehash/src
 INCLUDE=-I${CAPNP_ROOT}/src -I${PROTO_ROOT} -I${GRPC_ROOT} -I${SPARSEHASH_ROOT} -I.
 
 ifeq ($(DBG), 1)
+  TARGET=build/dbg
   CXX_FLAGS=-std=c++11 -Wall -fPIC -O0 -g2 ${INCLUDE}
 else
+  TARGET=build/opt
   CXX_FLAGS=-std=c++11 -Wall -fPIC -DNDEBUG -O3 -g2 ${INCLUDE}
 endif
 
@@ -32,28 +34,34 @@ SOURCE := ${GENERATED_PROTO}\
   typhoon/inputs.cc\
   typhoon/worker.cc\
   typhoon/colgroup.cc
+  
 
-OBJ := $(patsubst %.cc,build/%.o,${SOURCE})
+OBJ := $(patsubst %.cc,${TARGET}/%.o,${SOURCE})
 
-all: build/libtyphoon.a build/typhoon_worker
+all: ${TARGET}/libtyphoon.a ${TARGET}/typhoon_worker build/latest
 
-build/typhoon_worker: build/libtyphoon.a build/contrib/count.o build/contrib/kmer.o build/typhoon/main.o
+build/latest: 
+	-mkdir -p build
+	rm -f build/latest
+	ln -s $(abspath ${TARGET}) build/latest
+
+${TARGET}/typhoon_worker: ${TARGET}/libtyphoon.a ${TARGET}/contrib/count.o ${TARGET}/contrib/kmer.o ${TARGET}/typhoon/main.o
 	g++  -Wl,-no_pie -o $@ $^ ${LIBS}
 
-build/libtyphoon.a: ${OBJ}
+${TARGET}/libtyphoon.a: ${OBJ}
 	ld -o $@ -r $^
 
 clean:
-	rm -rf build/*
+	rm -rf ${TARGET}/*
 	rm -f typhoon/*.pb.*
 	rm -f typhoon/*_pb2.py
 
-build/%.o : %.cc ${GENERATED_PROTO}
-	@mkdir -p build/$(dir $<)
+${TARGET}/%.o : %.cc ${GENERATED_PROTO}
+	@mkdir -p ${TARGET}/$(dir $<)
 	g++ -MMD -MP -c ${CXX_FLAGS} $< -o $@
 
-build/%.o : %.capnp.c++
-	@mkdir -p build/$(dir $^)
+${TARGET}/%.o : %.capnp.c++
+	@mkdir -p ${TARGET}/$(dir $^)
 	g++ -MD -MP -c ${CXX_FLAGS} $^ -o $@
 
 typhoon/%.pb.cc typhoon/%.grpc.pb.cc typhoon/%_pb2.py: typhoon/typhoon.proto
@@ -63,4 +71,5 @@ typhoon/%.pb.cc typhoon/%.grpc.pb.cc typhoon/%_pb2.py: typhoon/typhoon.proto
 	sed -i'' -e 's/import typhoon\.typhoon_pb2//g' ./typhoon/typhoon_pb2.py
 	sed -i'' -e 's/typhoon\.typhoon_pb2\.//g' ./typhoon/typhoon_pb2.py
 
-include build/*/*.d
+.PHONY: build/latest
+-include ${TARGET}/*/*.d

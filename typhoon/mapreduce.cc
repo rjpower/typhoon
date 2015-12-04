@@ -14,7 +14,7 @@ public:
       ColGroup* dst,
       IndexVec::const_iterator st,
       IndexVec::const_iterator ed) {
-    dst->col(0).copy(src.col(0), *st);
+    dst->col(0).copy(src.col(0), st->idx);
     dst->col(1).as<uint64_t>().push(ed - st);
   }
 };
@@ -34,11 +34,12 @@ public:
       ColGroup* dst,
       IndexVec::const_iterator st,
       IndexVec::const_iterator ed) {
-    dst->col(0).copy(src.col(0), *st);
+    dst->col(0).copy(src.col(0), st->idx);
     const ColumnT<uint64_t>& valCol = src.col(1).as<uint64_t>();
     uint64_t sum = 0;
     while (st != ed) {
-      sum += valCol.at(*st); ++st;
+      gpr_log(GPR_INFO, "Here: %lu %lu %lu", sum, st->idx, valCol.at(st->idx));
+      sum += valCol.at(st->idx); ++st;
     }
     dst->col(1).as<uint64_t>().push(sum);
   }

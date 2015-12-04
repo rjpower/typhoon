@@ -14,6 +14,7 @@ class Task(object):
     def __init__(self, description):
         self._description = description
         self._worker = None
+        self._status_msg = None
 
         logging.info('Created task: %s', self._description.id)
 
@@ -27,8 +28,21 @@ class Task(object):
 
         return typhoon_pb2.PENDING
 
+    def update_status(self, msg):
+        self._status_msg = msg
+
+    def status_msg(self):
+        if not self._status_msg:
+            msg = typhoon_pb2.TaskStatus()
+            msg.id = self.name
+            msg.progress = -1
+            msg.status = typhoon_pb2.PENDING
+            return msg
+        
+        return self._status_msg
+
     def can_schedule(self, stores):
-        logging.info('CanSchedule(%s, %s)', self.name, self._worker)
+        logging.debug('CanSchedule(%s, %s)', self.name, self._worker)
         if self._worker:
             return False
 
@@ -97,9 +111,12 @@ class Worker(object):
         self._stub.assign(store._description, 10)
         logging.info('Done.')
 
-    def ping(self, req):
+    def ping(self, req, tasks):
         try:
             self._ping_resp = self._stub.ping(req, 10)
+            for status in self._ping_resp.task:
+#                 logging.info('Got task: %s', status)
+                tasks[status.id].update_status(status)
         except:
             logging.warn('Worker ping failed.', exc_info=1)
 
@@ -165,7 +182,15 @@ class MasterService(typhoon_pb2.BetaTyphoonMasterServicer):
         return typhoon_pb2.RunGraphResponse()
 
     def status(self, request, context):
-        pass
+        res = typhoon_pb2.MasterStatus()
+        try:
+            job = res.job.add()
+            for t in self._tasks.values():
+                job.task.add().CopyFrom(t.status_msg())
+            return res
+        except:
+            logging.info('WTF', exc_info=1)
+            return res
 
     def available_tasks(self):
         for t in self._tasks.values():
@@ -193,7 +218,7 @@ class MasterService(typhoon_pb2.BetaTyphoonMasterServicer):
     def update_workers(self):
         ping_req = typhoon_pb2.PingRequest()
         for hostport, worker in self._workers.items():
-            worker.ping(ping_req)
+            worker.ping(ping_req, self._tasks)
 
     def shutdown(self):
         for hostport, worker in self._workers.items():

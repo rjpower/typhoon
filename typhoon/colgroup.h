@@ -3,12 +3,12 @@
 
 #include <vector>
 #include <string>
+#include <memory.h>
 
 #include "typhoon/typhoon.pb.h"
 #include "typhoon/typhoon.grpc.pb.h"
 
 enum ColumnType {
-  INVALID = -1,
   UINT8 = 1,
   UINT16,
   UINT32,
@@ -18,10 +18,19 @@ enum ColumnType {
   INT32,
   INT64,
   STR,
+  INVALID = 1024,
 };
 
 class Column;
 class ColGroup;
+
+struct SortIndex {
+  uint64_t idx;
+  union {
+    uint64_t u64;
+    char str[8];
+  } hint;
+};
 
 template <class T>
 struct TypeUtil {
@@ -30,14 +39,35 @@ struct TypeUtil {
 template <>
 struct TypeUtil<uint64_t> {
   static ColumnType code() { return UINT64; }
+  static size_t byteSize(const uint64_t& val) { return sizeof(val); }
+  static void hint(SortIndex& idx, const uint64_t& val) {
+    idx.hint.u64 = val;
+  }
+  static bool less(const std::vector<uint64_t>& v, SortIndex a, SortIndex b) {
+    return a.hint.u64 < b.hint.u64;
+  }
 };
 
 template <>
 struct TypeUtil<std::string> {
   static ColumnType code() { return STR; }
+  static size_t byteSize(const std::string& val) { return val.size(); }
+  static bool less(const std::vector<std::string>& v, SortIndex a, SortIndex b) {
+    const char* ah = a.hint.str;
+    const char* bh = b.hint.str;
+    for (size_t i = 0; i < 8; ++i) {
+      if (ah[i] < bh[i]) { return true; }
+      if (ah[i] > bh[i]) { return false; }
+    }
+    return v[a.idx] < v[b.idx];
+  }
+  static void hint(SortIndex& idx, const std::string& val) {
+    bzero(idx.hint.str, 8);
+    memcpy(idx.hint.str, val.data(), std::min(8ul, val.size()));
+  }
 };
 
-using IndexVec = std::vector<uint32_t>;
+using IndexVec = std::vector<SortIndex>;
 
 class Combiner {
 public:
@@ -73,6 +103,7 @@ public:
   virtual std::string toString(size_t idx) const = 0;
 
   virtual size_t size() const = 0;
+  virtual size_t byteSize() const = 0;
   virtual void groupBy(const ColGroup& src, ColGroup* dst, size_t idx, Combiner* c) const = 0;
 
   template <class T>
@@ -90,12 +121,15 @@ private:
 template <typename T>
 IndexVec argsort(const std::vector<T> &v) {
   IndexVec idx(v.size());
-  for (uint32_t i = 0; i != v.size(); ++i) {
-    idx[i] = i;
+  for (uint64_t i = 0; i != v.size(); ++i) {
+    idx[i].idx = i;
+    TypeUtil<T>::hint(idx[i], v[i]);
   }
 
-  sort(idx.begin(), idx.end(),
-       [&v](size_t i1, size_t i2) {return v[i1] < v[i2];});
+  std::sort(idx.begin(), idx.end(),
+       [&v](SortIndex i1, SortIndex i2) {
+    return TypeUtil<T>::less(v, i1, i2);
+  });
   return idx;
 }
 
@@ -123,12 +157,16 @@ class ColumnT : public Column {
 private:
   typedef std::vector<T> Vec;
   Vec data_;
+  size_t bytes_;
 
 public:
-  ColumnT(const std::string& name) {
+  ColumnT(const std::string& name) : bytes_(0) {
     this->name = name;
     this->type = TypeUtil<T>::code();
   }
+
+  Vec& data() { return data_; }
+  const Vec& data() const { return data_; }
 
   typename Vec::iterator begin() { return data_.begin(); }
   typename Vec::iterator end() { return data_.end(); }
@@ -136,28 +174,49 @@ public:
   typename Vec::const_iterator begin() const { return data_.begin(); }
   typename Vec::const_iterator end() const { return data_.end(); }
 
-  Vec& data() { return data_; }
   const T& at(size_t idx) const { return data_[idx]; }
-  void push(const T& val) { data_.push_back(val); }
-
-  void clear() { data_.clear(); }
-  void copy(const Column& src, size_t idx) {
-    data_.push_back(src.as<T>().data_[idx]);
+  void push(const T& val) {
+    data_.push_back(val);
+    bytes_ += TypeUtil<T>::byteSize(val);
   }
+
+  void clear() { data_.clear(); bytes_ = 0; }
+  void copy(const Column& src, size_t idx) { push(src.as<T>().data_[idx]); }
   void merge(const Column& other) {
     data_.insert(data_.end(), other.as<T>().begin(), other.as<T>().end());
+    bytes_ += other.as<T>().bytes_;
   }
 
-  size_t size() const {
-    return data_.size();
-  }
+  size_t size() const { return data_.size(); }
+  size_t byteSize() const { return bytes_; }
 
   void groupBy(const ColGroup& src, ColGroup* dst, size_t idx, Combiner* c) const {
+     groupBySort(src, dst, idx, c);
+//    groupByHash(src, dst, idx, c);
+  }
+
+  void groupByHash(const ColGroup& src, ColGroup* dst, size_t idx, Combiner* c) const {
+    std::unordered_map<T, std::vector<SortIndex>> groups;
+    groups.reserve(data_.size() / 2);
+    for (uint64_t i = 0; i < data_.size(); ++i) {
+      SortIndex si;
+      si.idx = i;
+      si.hint.u64 = 0;
+      groups[data_[i]].push_back(si);
+    }
+
+    for (auto i = groups.begin(); i != groups.end(); ++i) {
+      c->combine(src, dst, i->second.begin(), i->second.end());
+    }
+  }
+
+
+  void groupBySort(const ColGroup& src, ColGroup* dst, size_t idx, Combiner* c) const {
     IndexVec indices = argsort(data_);
     auto last = indices.begin();
 
     for (auto i = indices.begin(); i < indices.end(); ++i) {
-      if (data_[*i] != data_[*last]) {
+      if (data_[i->idx] != data_[last->idx]) {
         c->combine(src, dst, last, i);
         last = i;
       }
@@ -187,6 +246,14 @@ public:
 
   const Column& col(size_t idx) const { return *data[idx]; }
   Column& col(size_t idx) { return *data[idx]; }
+
+  size_t byteSize() {
+    size_t bytes = 0;
+    for (size_t i = 0; i < data.size(); ++i) {
+      bytes += data[i]->byteSize();
+    }
+    return bytes;
+  }
 
   void addCol(Column* c) {
     data.push_back(std::shared_ptr<Column>(c));

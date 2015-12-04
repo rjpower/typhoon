@@ -46,7 +46,14 @@ struct TaskHelper {
 
   ::TaskDescription request;
 
+  bool running;
+
+  TaskHelper() : running(true) {
+
+  }
+
   void start() {
+    running = true;
     thread.reset(new std::thread(&TaskHelper::run, this));
   }
 
@@ -71,6 +78,9 @@ private:
     }
 
     gpr_log(GPR_INFO, "Task %s finished successfully.", request.id().c_str());
+    running = false;
+    sources.clear();
+    sinks.clear();
   }
 };
 

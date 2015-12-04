@@ -14,7 +14,7 @@ def test_kmer():
         source=typhoon_pb2.FileSplit(
           filename='./testdata/hs_alt_CHM1_1.1_chr1.fa',
           start=0,
-          end=int(10e6),
+          end=int(1e4),
         )
     )
 
@@ -56,7 +56,7 @@ def main():
     try:
         master = subprocess.Popen(['python', 'typhoon/master.py'])
         time.sleep(1)
-        worker = subprocess.Popen(['./build/typhoon_worker'], env={ 'MASTER_ADDRESS': '127.0.0.1:29999' })
+        worker = subprocess.Popen(['./build/latest/typhoon_worker'], env={ 'MASTER_ADDRESS': '127.0.0.1:29999' })
         graph = test_kmer()
 
         channel = implementations.insecure_channel('localhost', 29999)
@@ -64,8 +64,20 @@ def main():
         stub = typhoon_pb2.beta_create_TyphoonMaster_stub(channel)
         response = stub.execute(graph, 3600)
         logging.info('Response: %s', response)
-
-        time.sleep(60)
+        
+        ready = False
+        while not ready:
+            ready = True
+            empty = typhoon_pb2.EmptyMessage()
+            status = stub.status(empty, 100)
+#             logging.info('Status: %s', status)
+            job = status.job[0]
+            for t in job.task:
+                if t.status != typhoon_pb2.SUCCESS:
+                    ready = False
+            
+            time.sleep(1)
+                    
         logging.info('Success!')
     except:
         logging.info('Error.', exc_info=1)

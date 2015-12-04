@@ -18,9 +18,7 @@ public:
     for (size_t i = 0; i < rows.size(); ++i) {
       for (size_t j = 0; j < rows.cols(); ++j) {
         const Column& col = rows.col(j);
-        fprintf(out_, "%s: %s",
-            col.name.c_str(),
-            col.toString(i).c_str());
+        fprintf(out_, "%s: %s", col.name.c_str(), col.toString(i).c_str());
         if (j != rows.cols() - 1) {
           fprintf(out_, " ");
         }
