@@ -14,8 +14,8 @@ public:
     fclose(out_);
   }
 
-  void write(const ColGroup& rows) {
-    for (size_t i = 0; i < rows.size(); ++i) {
+  void write(const Table& rows) {
+    for (size_t i = 0; i < rows.length(); ++i) {
       for (size_t j = 0; j < rows.cols(); ++j) {
         const Column& col = rows.col(j);
         fprintf(out_, "%s: %s", col.name.c_str(), col.toString(i).c_str());

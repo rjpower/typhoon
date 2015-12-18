@@ -3,6 +3,8 @@ MAKEFLAGS+=-r
 
 ROOT=.
 
+CAPNP_ROOT=./third_party/capnproto/c++/
+
 PROTO_ROOT=./third_party/grpc/third_party/protobuf/src/
 PROTOC=./third_party/grpc/bins/opt/protobuf/protoc
 
@@ -22,34 +24,41 @@ else
   CXX_FLAGS=-std=c++11 -Wall -fPIC -DNDEBUG -O3 -g2 ${INCLUDE}
 endif
 
-LIBS=-Lthird_party/grpc/libs/opt/ -Lthird_party/grpc/third_party/protobuf/src/.libs/\
+LIBS=-Lthird_party/grpc/libs/opt/\
+  -Lthird_party/grpc/third_party/protobuf/src/.libs/\
   -lgrpc++_unsecure -lgrpc_unsecure -lprotobuf -lgpr -lpthread -lz
 
 
 GENERATED_PROTO=typhoon/typhoon.pb.cc typhoon/typhoon.grpc.pb.cc
 SOURCE := ${GENERATED_PROTO}\
-  typhoon/common.cc\
-  typhoon/mapreduce.cc\
-  typhoon/registry.cc\
+  typhoon/table.cc\
   typhoon/inputs.cc\
-  typhoon/worker.cc\
-  typhoon/colgroup.cc
+  typhoon/typhoon_c.cc
   
 
 OBJ := $(patsubst %.cc,${TARGET}/%.o,${SOURCE})
+STATIC_LIB := ${TARGET}/libtyphoon.a 
 
-all: ${TARGET}/libtyphoon.a ${TARGET}/typhoon_worker build/latest
+
+
+all: ${TARGET}/libtyphoon.a\
+  ${TARGET}/libtyphoon.so\
+  build/latest\
+  ${TARGET}/test/kmer-local
 
 build/latest: 
 	-mkdir -p build
 	rm -f build/latest
 	ln -s $(abspath ${TARGET}) build/latest
 
-${TARGET}/typhoon_worker: ${TARGET}/libtyphoon.a ${TARGET}/contrib/count.o ${TARGET}/contrib/kmer.o ${TARGET}/typhoon/main.o
-	g++  -Wl,-no_pie -o $@ $^ ${LIBS}
+${TARGET}/libtyphoon.so: ${OBJ}
+	g++ -shared -o $@ $^ ${LIBS}
 
-${TARGET}/libtyphoon.a: ${OBJ}
+${STATIC_LIB}: ${OBJ}
 	ld -o $@ -r $^
+	
+${TARGET}/test/kmer-local: ${TARGET}/test/kmer-local.o ${STATIC_LIB}
+	g++ -o $@ $^ ${LIBS}
 
 clean:
 	rm -rf ${TARGET}/*

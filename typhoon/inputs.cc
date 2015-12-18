@@ -1,7 +1,5 @@
-#include "typhoon/registry.h"
-#include "typhoon/common.h"
-
-#include <algorithm>
+#include <typhoon/table.h>
+#include <typhoon/types.h>
 
 #define LOG_EVERY_N(n, msg...)\
   do {\
@@ -12,28 +10,58 @@
   } while(0)
 
 
+namespace typhoon {
+
 template <class T>
-class SimpleSource : public Source {
+class SimpleSource : public Table {
+public:
+  void init(const Str& file, int64_t start, int64_t end) {
+    file_ = file;
+    start_ = start;
+    end_ = end;
+  }
+
   bool ready() {
     return true;
   }
 
-  Iterator* iterator() {
-    T* it = new T();
-    it->init(
-        this->split_.filename(),
-        this->split_.start(),
-        this->split_.end()
-    );
-    return it;
+  TableSchema schema() {
+    TableSchema res;
+    res.columns.push_back({ "offset", INT64 });
+    res.columns.push_back({ "content", STR });
+    return res;
   }
+
+  Ptr<TableIterator> iterator(const Vec<Str>& columns) {
+    T* it = new T();
+    it->init(file_, start_, end_);
+    return Ptr<TableIterator>(it);
+  }
+
+  size_t length() {
+    return 0;
+  }
+
+  Vec<Str> columns() {
+    Vec<Str> cols = {
+        "offset",
+        "content"
+    };
+    return cols;
+  }
+
+
+protected:
+  Str file_;
+  int64_t start_;
+  int64_t end_;
 };
 
-class FileIterator : public Iterator {
+class FileIterator : public TableIterator {
 public:
   FileIterator() : f_(NULL), batchSize_(1024) {}
 
-  virtual void init(const std::string& filename, uint64_t start, uint64_t stop) {
+  virtual void init(const Str& filename, uint64_t start, uint64_t stop) {
     filename_ = filename;
     pos_ = start;
     start_ = start;
@@ -46,43 +74,52 @@ public:
     fclose(f_);
   }
 
-  bool next(ColGroup* rows) {
-    rows->clear();
-    rows->addCol(Column::create("offset", UINT64));
-    rows->addCol(Column::create("content", STR));
-
-    for (size_t i = 0; i < batchSize_; ++i) {
+  TableBuffer read(size_t numRows) {
+    for (size_t i = 0; i < numRows; ++i) {
       if (pos_ >= stop_) {
         break;
       }
 
-      if (!this->read(buf_)) {
+      if (!this->_getRow(buf_)) {
         break;
       }
 
-      rows->col(0).as<uint64_t>().push(pos_);
-      rows->col(1).as<std::string>().push(buf_);
+      offset_.push_back(pos_);
+      content_.push_back(buf_);
       pos_ += buf_.size();
     }
 
-    gpr_log(GPR_INFO, "Reading: %llu %llu %d", pos_, stop_, rows->size());
-    return rows->size() > 0;
+    rows_.cols = { offset_.data(), content_.data() };
   }
+
+  bool done() {
+    return rows_.size() == 0;
+  }
+
+  const TableBuffer& value() {
+    return rows_;
+  }
+
 protected:
-  virtual bool read(std::string& next) = 0;
+  virtual bool _getRow(Str& next) = 0;
 
   FILE* f_;
-  std::string filename_;
-  std::string buf_;
+  Str filename_;
+  Str buf_;
   uint64_t batchSize_;
   uint64_t pos_;
   uint64_t start_;
   uint64_t stop_;
+
+  IntColumn<int64_t> offset_;
+  StrColumn content_;
+
+  TableBuffer rows_;
 };
 
 class WordIterator : public FileIterator {
 public:
-  bool read(std::string& buf) {
+  bool _getRow(Str& buf) {
     buf.resize(1024);
     int res = fscanf(f_, "%s", &buf[0]);
     if (res == EOF) {
@@ -102,7 +139,7 @@ public:
     batchSize_ = 1;
   }
 
-  bool read(std::string& buf) {
+  bool _getRow(Str& buf) {
     static const uint64_t kBufSize = 1 << 20;
     buf.resize(kBufSize);
     uint64_t bytesToRead = std::min(kBufSize - 1, stop_ - pos_);
@@ -111,8 +148,6 @@ public:
       return false;
     }
     buf.resize(bytesRead);
-//    gpr_log(GPR_INFO, "Read: %llu, %llu, got %lu %.80s",
-//        stop_ - pos_, bytesToRead, bytesRead, buf.c_str());
     return true;
   }
 };
@@ -123,7 +158,7 @@ public:
 
 class LineIterator : public FileIterator {
 private:
-  bool read(std::string& buf) {
+  bool _getRow(Str& buf) {
     buf.resize(4096);
     uint64_t bytesToRead = std::min(4095ull, stop_ - pos_);
     char* res = fgets(&buf[0], bytesToRead, f_);
@@ -139,6 +174,10 @@ class LineSource : public SimpleSource<LineIterator> {
 public:
 };
 
-REGISTER(Base, WordSource);
-REGISTER(Base, LineSource);
-REGISTER(Base, BlockSource);
+Table* NewBlockSource(const Str& name, int64_t start, int64_t stop) {
+  auto b = new BlockSource();
+  b->init(name, start, stop);
+  return b;
+}
+
+}
