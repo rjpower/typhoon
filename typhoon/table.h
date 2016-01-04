@@ -6,8 +6,6 @@
 
 namespace typhoon {
 
-
-// Provide default implementations of order()/groupby()?
 class FilterExpr;
 
 enum ColumnType {
@@ -15,115 +13,51 @@ enum ColumnType {
   INT64 = 2
 };
 
-struct ColumnBuffer {
-  union {
-    const int64_t* i64;
-    const StringPiece* str;
-  } ptr;
-
-  const void* data;
-  size_t bytes;
-  size_t len;
-
-  ColumnBuffer clone();
-
-  static ColumnBuffer EMPTY;
-};
-
 struct ColumnSchema {
   Str name;
   ColumnType type;
 };
 
-
-class ColumnIterator {
-public:
-  virtual ColumnType type() = 0;
-
-  // Read `num` rows from the iterator.
-  // The iterator retains ownership of the returned data.
-  virtual ColumnBuffer read(size_t) = 0;
-};
-
 class Column {
 public:
-  virtual Ptr<Column> filter(FilterExpr*) {
-    assert(false);
-  }
-
-  virtual Ptr<ColumnIterator> iterator() = 0;
-
-  virtual void order() {
-    assert(false);
-  }
-
-  virtual void group() {
-    assert(false);
-  }
-
-  virtual size_t size() = 0;
   virtual ColumnType type() = 0;
+  virtual Str name() = 0;
+  virtual Ptr<MemoryBuffer> create_buffer();
 };
 
-struct TableBuffer {
-  Vec<ColumnBuffer> cols;
-  size_t size();
-
-  static TableBuffer EMPTY;
+struct RowSet {
+  Vec<Ptr<MemoryBuffer>> cols;
+  void spill();
 };
 
-struct TableSchema {
-  Vec<ColumnSchema> columns;
-};
-
-class TableIterator {
+class Iterator {
 public:
-  virtual TableBuffer read(size_t) = 0;
+  virtual bool read(Ptr<RowSet> buffer, size_t bytes) = 0;
+  virtual Ptr<RowSet> create_rowset() = 0;
 };
 
 class Table {
 public:
-  virtual void setInputs(const Vec<Table>& inputs) {
+  Ptr<Column> col(const Str&);
+  size_t col_idx(const Str&);
+  const Vec<Ptr<Column>>& cols();
 
-  }
+  Ptr<Table> sort(Str col);
+  Ptr<Table> reduce_by_col(Str col);
+  Ptr<Table> limit(size_t count);
+  Ptr<Table> filter(FilterExpr expr);
 
-  virtual Ptr<TableIterator> iterator(const Vec<Str>& columns);
-
-  virtual TableSchema schema() = 0;
+  Ptr<Iterator> iterator();
 };
 
-class StrColumn : public Column {
-public:
-  Ptr<ColumnIterator> iterator();
-  void clear();
-  void push_back(const Str& obj);
-  ColumnType type();
-  ColumnBuffer data();
-  size_t size() {
-    return ptrs_.size();
-  }
-
+class SpillTable: public Table {
 private:
-  Str bytes_;
-  Vec<std::pair<size_t, size_t>> offsets_;
-  Vec<StringPiece> ptrs_;
-};
+  Vec<Ptr<File>> cols_;
 
-template <class T>
-class IntColumn : public Column {
 public:
-  Ptr<ColumnIterator> iterator();
-  void clear();
-  void push_back(T obj);
-  ColumnType type();
-  ColumnBuffer data();
-
-  size_t size() {
-    return data_.size();
-  }
-private:
-  Vec<T> data_;
 };
+
+class TableOp {};
 
 }
 

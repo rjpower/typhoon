@@ -75,6 +75,8 @@ public:
   }
 
   TableBuffer read(size_t numRows) {
+    rows_.clear();
+
     for (size_t i = 0; i < numRows; ++i) {
       if (pos_ >= stop_) {
         break;
@@ -90,6 +92,7 @@ public:
     }
 
     rows_.cols = { offset_.data(), content_.data() };
+    return rows_;
   }
 
   bool done() {

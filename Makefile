@@ -1,5 +1,7 @@
-.SUFFIXES:
 MAKEFLAGS+=-r
+
+CXX ?= g++
+CC ?= gcc
 
 ROOT=.
 
@@ -13,15 +15,23 @@ GRPC_CPP_PLUGIN=./third_party/grpc/bins/opt/grpc_cpp_plugin
 GRPC_PYTHON_PLUGIN=./third_party/grpc/bins/opt/grpc_python_plugin
 
 SPARSEHASH_ROOT=./third_party/sparsehash/src
+THRUST_ROOT=./third_party/
+CUDA_ROOT=/Developer/NVIDIA/CUDA-7.5/include
 
-INCLUDE=-I${CAPNP_ROOT}/src -I${PROTO_ROOT} -I${GRPC_ROOT} -I${SPARSEHASH_ROOT} -I.
+INCLUDE=-I${CAPNP_ROOT}/src\
+ -I${PROTO_ROOT}\
+ -I${GRPC_ROOT}\
+ -I${SPARSEHASH_ROOT}\
+ -I${THRUST_ROOT}\
+ -I${CUDA_ROOT}\
+ -I.\
 
 ifeq ($(DBG), 1)
   TARGET=build/dbg
-  CXX_FLAGS=-std=c++11 -Wall -fPIC -O0 -g2 ${INCLUDE}
+  CXX_FLAGS=-std=c++11 -fPIC -O0 -g2 ${INCLUDE}
 else
   TARGET=build/opt
-  CXX_FLAGS=-std=c++11 -Wall -fPIC -DNDEBUG -O3 -g2 ${INCLUDE}
+  CXX_FLAGS=-std=c++11 -fPIC -DNDEBUG -O3 -g2 ${INCLUDE}
 endif
 
 LIBS=-Lthird_party/grpc/libs/opt/\
@@ -31,9 +41,7 @@ LIBS=-Lthird_party/grpc/libs/opt/\
 
 GENERATED_PROTO=typhoon/typhoon.pb.cc typhoon/typhoon.grpc.pb.cc
 SOURCE := ${GENERATED_PROTO}\
-  typhoon/table.cc\
-  typhoon/inputs.cc\
-  typhoon/typhoon_c.cc
+  typhoon/sort.cc\
   
 
 OBJ := $(patsubst %.cc,${TARGET}/%.o,${SOURCE})
@@ -44,7 +52,8 @@ STATIC_LIB := ${TARGET}/libtyphoon.a
 all: ${TARGET}/libtyphoon.a\
   ${TARGET}/libtyphoon.so\
   build/latest\
-  ${TARGET}/test/kmer-local
+  ${TARGET}/test/kmer-local\
+  ${TARGET}/test/thrust
 
 build/latest: 
 	-mkdir -p build
@@ -52,13 +61,16 @@ build/latest:
 	ln -s $(abspath ${TARGET}) build/latest
 
 ${TARGET}/libtyphoon.so: ${OBJ}
-	g++ -shared -o $@ $^ ${LIBS}
+	${CXX} -shared -o $@ $^ ${LIBS}
 
 ${STATIC_LIB}: ${OBJ}
 	ld -o $@ -r $^
 	
 ${TARGET}/test/kmer-local: ${TARGET}/test/kmer-local.o ${STATIC_LIB}
-	g++ -o $@ $^ ${LIBS}
+	${CXX} -o $@ $^ ${LIBS}
+
+${TARGET}/test/thrust: ${TARGET}/test/thrust.o ${STATIC_LIB}
+	${CXX} -o $@ $^ ${LIBS}
 
 clean:
 	rm -rf ${TARGET}/*
@@ -67,11 +79,11 @@ clean:
 
 ${TARGET}/%.o : %.cc ${GENERATED_PROTO}
 	@mkdir -p ${TARGET}/$(dir $<)
-	g++ -MMD -MP -c ${CXX_FLAGS} $< -o $@
+	${CXX} -c ${CXX_FLAGS} $< -o $@
 
 ${TARGET}/%.o : %.capnp.c++
 	@mkdir -p ${TARGET}/$(dir $^)
-	g++ -MD -MP -c ${CXX_FLAGS} $^ -o $@
+	${CXX} -c ${CXX_FLAGS} $^ -o $@
 
 typhoon/%.pb.cc typhoon/%.grpc.pb.cc typhoon/%_pb2.py: typhoon/typhoon.proto
 	${PROTOC} ./typhoon/typhoon.proto --grpc_out=. --cpp_out=. --plugin=protoc-gen-grpc=${GRPC_CPP_PLUGIN}

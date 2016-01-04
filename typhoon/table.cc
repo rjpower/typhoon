@@ -6,58 +6,6 @@ static const size_t kMaxBufferBytes = 10 * 1000 * 1000;
 
 namespace typhoon {
 
-template <class Transformer>
-class TransformTable : public Table {
-public:
-  struct Iterator: public TableIterator {
-  public:
-    Iterator() {}
-    TableBuffer next() {
-      Vec<TableBuffer> rows;
-      for (auto iter: iters_) {
-        rows.push_back(iter.next(32));
-      }
-
-      if (rows[0].size() == 0) {
-        return TableBuffer::EMPTY;
-      }
-
-      // TODO: check row sizes are the same.
-      Transformer(rows, &result_);
-      return result_;
-    }
-  private:
-    Vec<Ptr<TableIterator>> iters_;
-    TableBuffer result_;
-  };
-
-  virtual void init(const Vec<Ptr<Table>>& inputs) {
-    inputs_ = inputs;
-  }
-
-  Ptr<TableIterator> iterator() {
-    Vec<Ptr<TableIterator>> iters;
-    for (auto input: inputs_) {
-      iters.push_back(input.iterator());
-    }
-
-    return new Iterator(iters);
-  }
-
-private:
-  TableBuffer result_;
-  Vec<Ptr<Table>> inputs_;
-};
-
-ColumnBuffer bufferFromVec(const Vec<int64_t>& data, size_t offset, size_t rows) {
-  ColumnBuffer result;
-  result.data = (void*)&data[offset];
-  result.ptr.i64 = const_cast<int64_t*>(&data[offset]);
-  result.bytes = sizeof(int64_t) * rows;
-  result.len = rows;
-  return result;
-}
-
 template <class T>
 class IntIterator : public ColumnIterator {
 public:
@@ -144,10 +92,14 @@ inline void StrColumn::clear() {
 }
 
 inline void StrColumn::push_back(const Str& obj) {
+  push_back(StringPiece(obj));
+}
+
+inline void StrColumn::push_back(const StringPiece& obj) {
   // We don't handle mutation after we're started iterating at the moment!
   assert(ptrs_.size() == 0);
   offsets_.push_back(std::make_pair(bytes_.size(), obj.size()));
-  bytes_ += obj;
+  std::copy(obj.data, obj.data + obj.size(), bytes_.end());
 }
 
 inline Ptr<ColumnIterator> StrColumn::iterator() {
@@ -166,5 +118,112 @@ ColumnBuffer StrColumn::data() {
 }
 
 template class IntColumn<int64_t>;
+
+template <class Transformer>
+class TransformTable : public Table {
+public:
+  struct Iterator: public TableIterator {
+  public:
+    Iterator() {}
+    TableBuffer next() {
+      Vec<TableBuffer> rows;
+      for (auto iter: iters_) {
+        rows.push_back(iter.next(32));
+      }
+
+      if (rows[0].size() == 0) {
+        return TableBuffer::EMPTY;
+      }
+
+      // TODO: check row sizes are the same.
+      Transformer(rows, &result_);
+      return result_;
+    }
+  private:
+    Vec<Ptr<TableIterator>> iters_;
+    TableBuffer result_;
+  };
+
+  virtual void init(const Vec<Ptr<Table>>& inputs) {
+    inputs_ = inputs;
+  }
+
+  Ptr<TableIterator> iterator() {
+    Vec<Ptr<TableIterator>> iters;
+    for (auto input: inputs_) {
+      iters.push_back(input.iterator());
+    }
+
+    return new Iterator(iters);
+  }
+
+private:
+  TableBuffer result_;
+  Vec<Ptr<Table>> inputs_;
+};
+
+static const int kSubstringLength = 8;
+void seriesTransform(
+    const Vec<TableBuffer>& inputs,
+    TableBuffer* rows
+) {
+  const ColumnBuffer& offsets = inputs[0].cols[0];
+  const ColumnBuffer& data = inputs[0].cols[1];
+
+  StrColumn output;
+  for (size_t i = 0; i < data.len; ++i) {
+    auto str = data.ptr.str[i];
+    for (size_t i = kSubstringLength; i < str.size(); ++i) {
+      output.push_back(
+          StringPiece(str.data + i - kSubstringLength, kSubstringLength)
+      );
+    }
+  }
+
+  rows->cols = { output.data() };
+}
+
+class StrColumn : public Column {
+public:
+  Ptr<ColumnIterator> iterator();
+  void clear();
+  void push_back(const Str& obj);
+  void push_back(const StringPiece& obj);
+  ColumnType type();
+  ColumnBuffer data();
+  size_t size() {
+    return ptrs_.size();
+  }
+
+private:
+  Str bytes_;
+  Vec<std::pair<size_t, size_t>> offsets_;
+  Vec<StringPiece> ptrs_;
+};
+
+template <class T>
+class IntColumn : public Column {
+public:
+  Ptr<ColumnIterator> iterator();
+  void clear();
+  void push_back(T obj);
+  ColumnType type();
+  ColumnBuffer data();
+
+  size_t size() {
+    return data_.size();
+  }
+private:
+  Vec<T> data_;
+};
+
+void RowSet::spill() {
+  Vec<Ptr<ColumnFile>> spills;
+  for (auto col: cols) {
+    spills.push_back(col->spill());
+  }
+
+  return spills;
+}
 
 }
